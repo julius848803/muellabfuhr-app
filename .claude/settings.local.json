@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(taskkill //F //PID 6604 //T)",
+      "Bash(taskkill //F //PID 31356 //T)",
+      "PowerShell(cd C:\\\\Users\\\\julia\\\\Downloads\\\\app\\\\MeineApp; $env:Path = [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"User\"\\); npx expo start --tunnel)",
+      "PowerShell($env:Path = [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"User\"\\); npm install -g @expo/ngrok@^4.1.0)",
+      "PowerShell(npm root -g)",
+      "PowerShell(npm prefix -g)",
+      "PowerShell(cd C:\\\\Users\\\\julia\\\\Downloads\\\\app\\\\MeineApp; $env:Path = [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"User\"\\); npm install @expo/ngrok@^4.1.0 --save-dev)",
+      "Bash(taskkill //F //IM node.exe //T)",
+      "PowerShell(cd C:\\\\Users\\\\julia\\\\Downloads\\\\app\\\\MeineApp; $env:Path = [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"User\"\\); $env:REACT_NATIVE_PACKAGER_HOSTNAME=\"192.168.1.8\"; npx expo start)",
+      "PowerShell(cd C:\\\\Users\\\\julia\\\\Downloads\\\\app\\\\MeineApp; $env:Path = [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"User\"\\); npm install)",
+      "PowerShell(Get-NetTCPConnection -LocalPort 8081 -ErrorAction SilentlyContinue)",
+      "Bash(taskkill //F //PID 13632 //T)",
+      "Bash(curl -s -o /tmp/met_response.json -w \"HTTP_STATUS:%{http_code}\\\\n\" -A \"MeineWetterApp/1.0 \\(test@example.com\\)\" \"https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=52.5200&lon=13.4050\")",
+      "Read(//tmp/**)",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=52.5200&lon=13.4050\" -Headers @{\"User-Agent\"=\"MeineWetterApp/1.0 \\(test@example.com\\)\"} -UseBasicParsing; $r.StatusCode; $r.Content.Substring\\(0,300\\) } catch { $_.Exception.Response.StatusCode.Value__; $_.Exception.Message })",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"https://wttr.in/Berlin?format=j1\" -Headers @{\"User-Agent\"=\"curl\"} -UseBasicParsing; $r.StatusCode; $r.Content.Substring\\(0,400\\) } catch { $_.Exception.Message })",
+      "Bash(curl -s \"https://wttr.in/Berlin?format=j1\" -A curl)",
+      "PowerShell(cd C:\\\\Users\\\\julia\\\\Downloads\\\\app\\\\MeineApp; $env:Path = [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"User\"\\); npx expo install expo-linear-gradient)",
+      "Bash(taskkill //F //PID 34036 //T)",
+      "Bash(gh --version)",
+      "Bash(gh auth *)",
+      "PowerShell($env:Path = [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"User\"\\); gh --version; git --version)",
+      "PowerShell(winget install GitHub.cli --accept-package-agreements --accept-source-agreements)",
+      "PowerShell($env:Path = [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"User\"\\); gh --version)",
+      "PowerShell($env:Path = [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"User\"\\); gh auth login --hostname github.com --git-protocol https --web)",
+      "PowerShell($env:Path = [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"User\"\\); gh auth status)",
+      "Bash(git init *)",
+      "Bash(git config *)",
+      "Bash(git add *)",
+      "Bash(git rm *)",
+      "Bash(rm -rf \"C:\\\\Users\\\\julia\\\\Downloads\\\\app\\\\MeineApp\\\\.git\")"
+    ]
+  }
+}
