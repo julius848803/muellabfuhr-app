@@ -38,7 +38,9 @@
       "PowerShell(cd C:\\\\Users\\\\julia\\\\Downloads\\\\app\\\\MeineApp; $env:Path = [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"User\"\\); npx expo install expo-notifications expo-document-picker expo-file-system @react-native-async-storage/async-storage @react-native-community/datetimepicker)",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" \"http://localhost:8081/index.bundle?platform=ios&dev=true\" --max-time 60)",
       "Bash(curl -s \"http://localhost:8081/index.bundle?platform=ios&dev=true\" --max-time 60 -o /tmp/bundle_check.js -w \"%{http_code}\\\\n\")",
-      "Bash(git checkout *)"
+      "Bash(git checkout *)",
+      "Bash(git commit -m 'Wetter-App zu Müllabfuhr-App umgebaut *)",
+      "Bash(git push *)"
     ]
   }
 }
