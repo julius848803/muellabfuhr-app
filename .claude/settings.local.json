@@ -31,7 +31,14 @@
       "Bash(git config *)",
       "Bash(git add *)",
       "Bash(git rm *)",
-      "Bash(rm -rf \"C:\\\\Users\\\\julia\\\\Downloads\\\\app\\\\MeineApp\\\\.git\")"
+      "Bash(rm -rf \"C:\\\\Users\\\\julia\\\\Downloads\\\\app\\\\MeineApp\\\\.git\")",
+      "Bash(git commit -m 'Initial commit: Wetter-App mit Open-Meteo und wttr.in Vergleich *)",
+      "Bash(gh repo *)",
+      "PowerShell(cd C:\\\\Users\\\\julia\\\\Downloads\\\\app; $env:Path = [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"User\"\\); gh repo create meine-wetter-app --private --source=. --remote=origin --push)",
+      "PowerShell(cd C:\\\\Users\\\\julia\\\\Downloads\\\\app\\\\MeineApp; $env:Path = [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"User\"\\); npx expo install expo-notifications expo-document-picker expo-file-system @react-native-async-storage/async-storage @react-native-community/datetimepicker)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" \"http://localhost:8081/index.bundle?platform=ios&dev=true\" --max-time 60)",
+      "Bash(curl -s \"http://localhost:8081/index.bundle?platform=ios&dev=true\" --max-time 60 -o /tmp/bundle_check.js -w \"%{http_code}\\\\n\")",
+      "Bash(git checkout *)"
     ]
   }
 }

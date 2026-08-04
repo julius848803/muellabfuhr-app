@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -10,356 +10,590 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
+  Alert,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { LinearGradient } from 'expo-linear-gradient';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system';
+import DateTimePicker from '@react-native-community/datetimepicker';
 
-function weatherInfo(code) {
-  if (code === 0) return { emoji: '☀️', text: 'Klarer Himmel' };
-  if (code === 1) return { emoji: '🌤️', text: 'Meist klar' };
-  if (code === 2) return { emoji: '⛅', text: 'Teilweise bewölkt' };
-  if (code === 3) return { emoji: '☁️', text: 'Bedeckt' };
-  if (code === 45 || code === 48) return { emoji: '🌫️', text: 'Nebel' };
-  if ([51, 53, 55, 56, 57].includes(code)) return { emoji: '🌦️', text: 'Nieselregen' };
-  if ([61, 63, 65, 66, 67].includes(code)) return { emoji: '🌧️', text: 'Regen' };
-  if ([80, 81, 82].includes(code)) return { emoji: '🌧️', text: 'Regenschauer' };
-  if ([71, 73, 75, 77, 85, 86].includes(code)) return { emoji: '❄️', text: 'Schnee' };
-  if ([95, 96, 99].includes(code)) return { emoji: '⛈️', text: 'Gewitter' };
-  return { emoji: '🌡️', text: '' };
+import { parseIcs } from './utils/ics';
+import { colorForType } from './utils/colors';
+import { getUpcomingPickups, formatRelativeDay, daysFromToday } from './utils/pickups';
+import {
+  getRecurringSchedules,
+  setRecurringSchedules,
+  getImportedEvents,
+  setImportedEvents,
+  getConfirmations,
+  setConfirmations,
+  getSettings,
+  setSettings,
+  getCounts,
+  setCounts,
+} from './utils/storage';
+import {
+  setupNotifications,
+  rescheduleAllReminders,
+  cancelRemindersForPickup,
+  addNotificationResponseListener,
+} from './utils/notifications';
+
+const INTERVAL_OPTIONS = [
+  { label: 'wöchentlich', weeks: 1 },
+  { label: 'alle 2 Wochen', weeks: 2 },
+  { label: 'alle 4 Wochen', weeks: 4 },
+];
+
+const TYPE_PRESETS = ['Restmüll', 'Biomüll', 'Papier', 'Gelber Sack'];
+
+function dateKeyFromDate(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
-function gradientFor(code, isNight) {
-  if (isNight) return ['#0f1a3c', '#2a3a63'];
-  if (code === 0 || code === 1) return ['#4a90d9', '#8fc6ec'];
-  if (code === 2 || code === 3) return ['#6f8ba6', '#a9bcc9'];
-  if ([45, 48].includes(code)) return ['#7c8a94', '#adb8bf'];
-  if ([61, 63, 65, 66, 67, 80, 81, 82, 51, 53, 55, 56, 57].includes(code))
-    return ['#4a5c72', '#7c93a8'];
-  if ([71, 73, 75, 77, 85, 86].includes(code)) return ['#5b7a8a', '#8fa3b0'];
-  if ([95, 96, 99].includes(code)) return ['#2c2f42', '#565b74'];
-  return ['#4a90d9', '#8fc6ec'];
+function formatDateKeyDisplay(dateKey) {
+  const [y, m, d] = dateKey.split('-');
+  return `${d}.${m}.${y}`;
 }
 
-function isNightNow(sunrise, sunset) {
-  if (!sunrise || !sunset) return false;
-  const now = Date.now();
-  return now < new Date(sunrise).getTime() || now > new Date(sunset).getTime();
-}
+// ---------- Übersicht ----------
 
-function formatTime(isoString) {
-  if (!isoString) return '–';
-  return new Date(isoString).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
-}
+function PickupRow({ pickup, confirmed, onConfirm, onUnconfirm }) {
+  const color = colorForType(pickup.type);
+  const diff = daysFromToday(pickup.date);
+  const urgent = diff <= 1 && !confirmed;
+  const canConfirmYet = diff <= 1;
 
-function formatHour(isoString) {
-  return new Date(isoString).toLocaleTimeString('de-DE', { hour: '2-digit' }).replace(' ', '');
-}
-
-function formatWeekday(dateString, index) {
-  if (index === 0) return 'Heute';
-  return new Date(dateString).toLocaleDateString('de-DE', { weekday: 'short' });
-}
-
-async function geocodeCity(name) {
-  const res = await fetch(
-    `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(
-      name
-    )}&count=1&language=de&format=json`
-  );
-  const data = await res.json();
-  if (!data.results || data.results.length === 0) {
-    throw new Error('Ort nicht gefunden');
-  }
-  const r = data.results[0];
-  return { name: r.name, country: r.country ?? '', lat: r.latitude, lon: r.longitude };
-}
-
-async function fetchOpenMeteo(lat, lon) {
-  const res = await fetch(
-    `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,precipitation,weather_code&hourly=temperature_2m,precipitation,weather_code&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,sunrise,sunset,weather_code&timezone=auto&forecast_days=7`
-  );
-  const data = await res.json();
-
-  const nowMs = Date.now();
-  const hourlyTimes = data.hourly.time;
-  let startIdx = hourlyTimes.findIndex((t) => new Date(t).getTime() >= nowMs);
-  if (startIdx === -1) startIdx = 0;
-
-  const hourly = hourlyTimes.slice(startIdx, startIdx + 24).map((t, i) => ({
-    time: t,
-    temp: data.hourly.temperature_2m[startIdx + i],
-    precipitation: data.hourly.precipitation[startIdx + i],
-    code: data.hourly.weather_code[startIdx + i],
-  }));
-
-  const daily = data.daily.time.map((t, i) => ({
-    date: t,
-    max: data.daily.temperature_2m_max[i],
-    min: data.daily.temperature_2m_min[i],
-    precipitation: data.daily.precipitation_sum[i],
-    sunrise: data.daily.sunrise[i],
-    sunset: data.daily.sunset[i],
-    code: data.daily.weather_code[i],
-  }));
-
-  return {
-    current: {
-      temp: data.current.temperature_2m,
-      precipitation: data.current.precipitation,
-      code: data.current.weather_code,
-    },
-    hourly,
-    daily,
-  };
-}
-
-async function fetchWttr(lat, lon) {
-  const res = await fetch(`https://wttr.in/${lat},${lon}?format=j1`);
-  const data = await res.json();
-  const current = data.current_condition[0];
-  return {
-    temp: current.temp_C,
-    precipitation: current.precipMM,
-    desc: current.weatherDesc?.[0]?.value ?? '',
-  };
-}
-
-function InfoTile({ label, value }) {
   return (
-    <View style={styles.infoTile}>
-      <Text style={styles.infoLabel}>{label}</Text>
-      <Text style={styles.infoValue}>{value}</Text>
+    <View style={[styles.pickupRow, urgent && styles.pickupRowUrgent]}>
+      <View style={[styles.colorDot, { backgroundColor: color }]} />
+      <View style={{ flex: 1 }}>
+        <Text style={styles.pickupType}>{pickup.type}</Text>
+        <Text style={styles.pickupDate}>
+          {formatRelativeDay(pickup.date)} · {formatDateKeyDisplay(pickup.date)}
+        </Text>
+        {pickup.holidayName && (
+          <Text style={styles.holidayWarning}>
+            ⚠️ {pickup.holidayName} — Termin evtl. verschoben, bitte prüfen
+          </Text>
+        )}
+      </View>
+      {confirmed ? (
+        <Pressable onPress={() => onUnconfirm(pickup.id)} hitSlop={8}>
+          <Text style={styles.confirmedBadge}>✓ Draußen</Text>
+        </Pressable>
+      ) : canConfirmYet ? (
+        <Pressable style={styles.confirmButton} onPress={() => onConfirm(pickup.id)}>
+          <Text style={styles.confirmButtonText}>Draußen</Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 }
 
-function CityDetail({ city, onBack }) {
-  const om = city.openMeteo;
-  const wt = city.wttr;
-  const today = om?.daily?.[0];
-  const night = today ? isNightNow(today.sunrise, today.sunset) : false;
-  const info = om ? weatherInfo(om.current.code) : { emoji: '⏳', text: '' };
-  const colors = om ? gradientFor(om.current.code, night) : ['#4a90d9', '#8fc6ec'];
+function CountersBar({ counts, types }) {
+  if (types.length === 0) return null;
+  return (
+    <View style={styles.countersBar}>
+      {types.map((type) => (
+        <View key={type} style={styles.counterChip}>
+          <View style={[styles.colorDot, { backgroundColor: colorForType(type) }]} />
+          <Text style={styles.counterType}>{type}</Text>
+          <Text style={styles.counterValue}>{counts[type] ?? 0}×</Text>
+        </View>
+      ))}
+    </View>
+  );
+}
 
-  const dailyMax = today ? Math.round(today.max) : null;
-  const dailyMin = today ? Math.round(today.min) : null;
-  let maxAll = 1;
-  if (om) {
-    maxAll = Math.max(...om.daily.map((d) => d.max)) || 1;
+function HomeTab({ pickups, confirmations, onConfirm, onUnconfirm, counts, types, loading }) {
+  if (loading) {
+    return (
+      <View style={styles.centered}>
+        <ActivityIndicator color="#2ecc71" />
+      </View>
+    );
   }
-  const minAll = om ? Math.min(...om.daily.map((d) => d.min)) : 0;
+  return (
+    <FlatList
+      data={pickups}
+      keyExtractor={(item) => item.id}
+      contentContainerStyle={styles.tabContent}
+      ListHeaderComponent={<CountersBar counts={counts} types={types} />}
+      renderItem={({ item }) => (
+        <PickupRow
+          pickup={item}
+          confirmed={!!confirmations[item.id]}
+          onConfirm={onConfirm}
+          onUnconfirm={onUnconfirm}
+        />
+      )}
+      ListEmptyComponent={
+        <Text style={styles.emptyText}>
+          Noch keine Termine. Leg unter "Termine" welche an oder importiere eine ICS-Datei.
+        </Text>
+      }
+    />
+  );
+}
+
+// ---------- Termine verwalten ----------
+
+function SchedulesTab({
+  recurringSchedules,
+  importedEvents,
+  onAddSchedule,
+  onDeleteSchedule,
+  onImport,
+  onClearImported,
+  importing,
+}) {
+  const [type, setType] = useState(TYPE_PRESETS[0]);
+  const [customType, setCustomType] = useState('');
+  const [intervalWeeks, setIntervalWeeks] = useState(2);
+  const [startDate, setStartDate] = useState(new Date());
+  const [showPicker, setShowPicker] = useState(false);
+
+  const finalType = customType.trim() || type;
+
+  const handleAdd = () => {
+    onAddSchedule({
+      id: `${finalType}-${Date.now()}`,
+      type: finalType,
+      intervalWeeks,
+      startDate: dateKeyFromDate(startDate),
+    });
+    setCustomType('');
+  };
 
   return (
-    <LinearGradient colors={colors} style={styles.gradientContainer}>
-      <ScrollView contentContainerStyle={styles.detailScroll} showsVerticalScrollIndicator={false}>
-        <Pressable onPress={onBack} hitSlop={10} style={styles.backButtonWrap}>
-          <Text style={styles.backButton}>‹ Städte</Text>
-        </Pressable>
-
-        <Text style={styles.detailCity}>{city.name}</Text>
-
-        {om ? (
-          <>
-            <Text style={styles.hugeTemp}>{Math.round(om.current.temp)}°</Text>
-            <Text style={styles.conditionText}>{info.emoji} {info.text}</Text>
-            <Text style={styles.hiLoText}>
-              H:{dailyMax}° L:{dailyMin}°
-            </Text>
-          </>
-        ) : city.openMeteoError ? (
-          <Text style={styles.conditionText}>Fehler beim Laden</Text>
+    <ScrollView contentContainerStyle={styles.tabContent}>
+      <Text style={styles.sectionTitle}>ICS-Kalender importieren</Text>
+      <Pressable style={styles.importButton} onPress={onImport} disabled={importing}>
+        {importing ? (
+          <ActivityIndicator color="#fff" />
         ) : (
-          <ActivityIndicator color="#fff" style={{ marginVertical: 30 }} />
+          <Text style={styles.importButtonText}>📄 ICS-Datei auswählen</Text>
         )}
+      </Pressable>
+      {importedEvents.length > 0 && (
+        <Pressable onPress={onClearImported} style={{ marginTop: 8 }}>
+          <Text style={styles.linkText}>
+            {importedEvents.length} importierte Termine löschen
+          </Text>
+        </Pressable>
+      )}
 
-        {om && (
-          <View style={styles.glassCard}>
-            <Text style={styles.glassCardLabel}>STÜNDLICHE VORHERSAGE</Text>
-            <FlatList
-              horizontal
-              data={om.hourly}
-              keyExtractor={(item) => item.time}
-              showsHorizontalScrollIndicator={false}
-              ItemSeparatorComponent={() => <View style={{ width: 18 }} />}
-              renderItem={({ item, index }) => {
-                const h = weatherInfo(item.code);
-                return (
-                  <View style={styles.hourlyItem}>
-                    <Text style={styles.hourlyTime}>{index === 0 ? 'Jetzt' : formatHour(item.time)}</Text>
-                    <Text style={styles.hourlyEmoji}>{h.emoji}</Text>
-                    <Text style={styles.hourlyTemp}>{Math.round(item.temp)}°</Text>
-                  </View>
-                );
-              }}
-            />
-          </View>
-        )}
+      <Text style={styles.sectionTitle}>Neuer wiederkehrender Termin</Text>
 
-        {om && (
-          <View style={styles.glassCard}>
-            <Text style={styles.glassCardLabel}>7-TAGE-VORHERSAGE</Text>
-            {om.daily.map((d, index) => {
-              const info2 = weatherInfo(d.code);
-              const barLeft = ((d.min - minAll) / (maxAll - minAll || 1)) * 100;
-              const barWidth = ((d.max - d.min) / (maxAll - minAll || 1)) * 100;
-              return (
-                <View key={d.date} style={styles.dailyRow}>
-                  <Text style={styles.dailyDay}>{formatWeekday(d.date, index)}</Text>
-                  <Text style={styles.dailyEmoji}>{info2.emoji}</Text>
-                  <Text style={styles.dailyMin}>{Math.round(d.min)}°</Text>
-                  <View style={styles.barTrack}>
-                    <View
-                      style={[
-                        styles.barFill,
-                        { left: `${barLeft}%`, width: `${Math.max(barWidth, 6)}%` },
-                      ]}
-                    />
-                  </View>
-                  <Text style={styles.dailyMax}>{Math.round(d.max)}°</Text>
-                </View>
-              );
-            })}
-          </View>
-        )}
+      <View style={styles.chipRow}>
+        {TYPE_PRESETS.map((t) => (
+          <Pressable
+            key={t}
+            style={[styles.chip, type === t && !customType && styles.chipActive]}
+            onPress={() => {
+              setType(t);
+              setCustomType('');
+            }}
+          >
+            <Text style={[styles.chipText, type === t && !customType && styles.chipTextActive]}>
+              {t}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+      <TextInput
+        style={styles.input}
+        placeholder="…oder eigener Name"
+        placeholderTextColor="#888"
+        value={customType}
+        onChangeText={setCustomType}
+      />
 
-        {om && today && (
-          <View style={styles.tileGrid}>
-            <InfoTile label="SONNENAUFGANG" value={formatTime(today.sunrise)} />
-            <InfoTile label="SONNENUNTERGANG" value={formatTime(today.sunset)} />
-            <InfoTile label="NIEDERSCHLAG" value={`${today.precipitation} mm`} />
-            <InfoTile
-              label="WTTR.IN VERGLEICH"
-              value={wt ? `${Math.round(wt.temp)}°C` : city.wttrError ? 'Fehler' : '…'}
-            />
-          </View>
-        )}
-      </ScrollView>
-      <StatusBar style="light" />
-    </LinearGradient>
+      <Text style={styles.fieldLabel}>Rhythmus</Text>
+      <View style={styles.chipRow}>
+        {INTERVAL_OPTIONS.map((opt) => (
+          <Pressable
+            key={opt.weeks}
+            style={[styles.chip, intervalWeeks === opt.weeks && styles.chipActive]}
+            onPress={() => setIntervalWeeks(opt.weeks)}
+          >
+            <Text
+              style={[
+                styles.chipText,
+                intervalWeeks === opt.weeks && styles.chipTextActive,
+              ]}
+            >
+              {opt.label}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+
+      <Text style={styles.fieldLabel}>Erster Abholtermin</Text>
+      <Pressable style={styles.dateButton} onPress={() => setShowPicker(true)}>
+        <Text style={styles.dateButtonText}>{dateKeyFromDate(startDate)}</Text>
+      </Pressable>
+      {showPicker && (
+        <DateTimePicker
+          value={startDate}
+          mode="date"
+          themeVariant="dark"
+          display={Platform.OS === 'ios' ? 'inline' : 'default'}
+          onChange={(event, selected) => {
+            setShowPicker(Platform.OS === 'ios');
+            if (selected) setStartDate(selected);
+          }}
+        />
+      )}
+
+      <Pressable style={styles.addButton} onPress={handleAdd}>
+        <Text style={styles.addButtonText}>+ Termin hinzufügen</Text>
+      </Pressable>
+
+      {recurringSchedules.length > 0 && (
+        <>
+          <Text style={styles.sectionTitle}>Deine wiederkehrenden Termine</Text>
+          {recurringSchedules.map((s) => (
+            <View key={s.id} style={styles.scheduleRow}>
+              <View style={[styles.colorDot, { backgroundColor: colorForType(s.type) }]} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.pickupType}>{s.type}</Text>
+                <Text style={styles.pickupDate}>
+                  {INTERVAL_OPTIONS.find((o) => o.weeks === s.intervalWeeks)?.label} · ab{' '}
+                  {formatDateKeyDisplay(s.startDate)}
+                </Text>
+              </View>
+              <Pressable onPress={() => onDeleteSchedule(s.id)} hitSlop={10}>
+                <Text style={styles.removeText}>✕</Text>
+              </Pressable>
+            </View>
+          ))}
+        </>
+      )}
+    </ScrollView>
   );
 }
 
-function CityListItem({ city, onPress, onRemove }) {
-  const om = city.openMeteo;
-  const today = om?.daily?.[0];
-  const night = today ? isNightNow(today.sunrise, today.sunset) : false;
-  const info = om ? weatherInfo(om.current.code) : null;
-  const colors = om ? gradientFor(om.current.code, night) : ['#3a3a55', '#3a3a55'];
+// ---------- Einstellungen ----------
+
+function Stepper({ value, onChange, min = 1, max = 60, suffix = '' }) {
+  return (
+    <View style={styles.stepperRow}>
+      <Pressable style={styles.stepperButton} onPress={() => onChange(Math.max(min, value - 1))}>
+        <Text style={styles.stepperButtonText}>−</Text>
+      </Pressable>
+      <Text style={styles.stepperValue}>
+        {value} {suffix}
+      </Text>
+      <Pressable style={styles.stepperButton} onPress={() => onChange(Math.min(max, value + 1))}>
+        <Text style={styles.stepperButtonText}>+</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+function SettingsTab({ settings, onChange }) {
+  const [showTimePicker, setShowTimePicker] = useState(false);
+  const [h, m] = settings.reminderTime.split(':').map(Number);
+  const timeAsDate = new Date();
+  timeAsDate.setHours(h, m, 0, 0);
 
   return (
-    <Pressable onPress={onPress}>
-      <LinearGradient colors={colors} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.listCard}>
-        <View style={styles.listCardTop}>
-          <View>
-            <Text style={styles.listCityName}>{city.name}</Text>
-            <Text style={styles.listCondition}>{om ? info.text : 'Lädt…'}</Text>
-          </View>
-          <Pressable onPress={onRemove} hitSlop={12}>
-            <Text style={styles.removeText}>✕</Text>
-          </Pressable>
-        </View>
-        <View style={styles.listCardBottom}>
-          <Text style={styles.listEmoji}>{om ? info.emoji : '⏳'}</Text>
-          <Text style={styles.listTemp}>{om ? `${Math.round(om.current.temp)}°` : '–'}</Text>
-        </View>
-        {om && today && (
-          <Text style={styles.listHiLo}>
-            H:{Math.round(today.max)}° L:{Math.round(today.min)}°
+    <ScrollView contentContainerStyle={styles.tabContent}>
+      <Text style={styles.sectionTitle}>Wann soll erinnert werden?</Text>
+      <View style={styles.chipRow}>
+        <Pressable
+          style={[styles.chip, settings.reminderMode === 'evening' && styles.chipActive]}
+          onPress={() => onChange({ ...settings, reminderMode: 'evening' })}
+        >
+          <Text
+            style={[
+              styles.chipText,
+              settings.reminderMode === 'evening' && styles.chipTextActive,
+            ]}
+          >
+            Am Vorabend
           </Text>
-        )}
-      </LinearGradient>
-    </Pressable>
+        </Pressable>
+        <Pressable
+          style={[styles.chip, settings.reminderMode === 'morning' && styles.chipActive]}
+          onPress={() => onChange({ ...settings, reminderMode: 'morning' })}
+        >
+          <Text
+            style={[
+              styles.chipText,
+              settings.reminderMode === 'morning' && styles.chipTextActive,
+            ]}
+          >
+            Am Abholtag
+          </Text>
+        </Pressable>
+      </View>
+
+      <Text style={styles.fieldLabel}>Uhrzeit der ersten Erinnerung</Text>
+      <Pressable style={styles.dateButton} onPress={() => setShowTimePicker(true)}>
+        <Text style={styles.dateButtonText}>{settings.reminderTime} Uhr</Text>
+      </Pressable>
+      {showTimePicker && (
+        <DateTimePicker
+          value={timeAsDate}
+          mode="time"
+          is24Hour
+          themeVariant="dark"
+          display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+          onChange={(event, selected) => {
+            setShowTimePicker(Platform.OS === 'ios');
+            if (selected) {
+              const hh = String(selected.getHours()).padStart(2, '0');
+              const mm = String(selected.getMinutes()).padStart(2, '0');
+              onChange({ ...settings, reminderTime: `${hh}:${mm}` });
+            }
+          }}
+        />
+      )}
+
+      <Text style={styles.sectionTitle}>Falls du nicht reagierst</Text>
+      <Text style={styles.fieldLabel}>Erinnerung wiederholen alle</Text>
+      <Stepper
+        value={settings.escalationIntervalMinutes}
+        onChange={(v) => onChange({ ...settings, escalationIntervalMinutes: v })}
+        min={1}
+        max={60}
+        suffix="Min."
+      />
+
+      <Text style={styles.fieldLabel}>Maximale Anzahl Wiederholungen</Text>
+      <Stepper
+        value={settings.escalationMaxRepeats}
+        onChange={(v) => onChange({ ...settings, escalationMaxRepeats: v })}
+        min={1}
+        max={30}
+        suffix="×"
+      />
+
+      <Text style={styles.hintText}>
+        Die Erinnerungen erscheinen als dringende Mitteilung (durchbricht z.B. "Bitte nicht
+        stören"), aber ohne Ton. In der Benachrichtigung kannst du direkt "Ist draußen"
+        bestätigen oder um 5 Minuten verschieben.
+      </Text>
+    </ScrollView>
   );
 }
+
+// ---------- App ----------
 
 export default function App() {
-  const [cities, setCities] = useState([]);
-  const [input, setInput] = useState('');
-  const [adding, setAdding] = useState(false);
-  const [addError, setAddError] = useState('');
-  const [selectedCityId, setSelectedCityId] = useState(null);
+  const [tab, setTab] = useState('home');
+  const [loading, setLoading] = useState(true);
+  const [recurringSchedules, setRecurringSchedulesState] = useState([]);
+  const [importedEvents, setImportedEventsState] = useState([]);
+  const [confirmations, setConfirmationsState] = useState({});
+  const [settings, setSettingsState] = useState(null);
+  const [counts, setCountsState] = useState({});
+  const [importing, setImporting] = useState(false);
+  const initialized = useRef(false);
 
-  const addCity = async () => {
-    const name = input.trim();
-    if (!name) return;
-    setAdding(true);
-    setAddError('');
+  useEffect(() => {
+    (async () => {
+      const [rs, ie, conf, set, cnt] = await Promise.all([
+        getRecurringSchedules(),
+        getImportedEvents(),
+        getConfirmations(),
+        getSettings(),
+        getCounts(),
+      ]);
+      setRecurringSchedulesState(rs);
+      setImportedEventsState(ie);
+      setConfirmationsState(conf);
+      setSettingsState(set);
+      setCountsState(cnt);
+      setLoading(false);
+      initialized.current = true;
+      await setupNotifications();
+    })();
+  }, []);
+
+  const typeFromId = (id) => id.split('__')[0];
+
+  const handleConfirm = useCallback(async (pickupIdOrIds) => {
+    const ids = Array.isArray(pickupIdOrIds) ? pickupIdOrIds : [pickupIdOrIds];
+    setConfirmationsState((prev) => {
+      const next = { ...prev };
+      for (const id of ids) next[id] = true;
+      setConfirmations(next);
+      return next;
+    });
+    setCountsState((prev) => {
+      const next = { ...prev };
+      for (const id of ids) {
+        const type = typeFromId(id);
+        next[type] = (next[type] ?? 0) + 1;
+      }
+      setCounts(next);
+      return next;
+    });
+    for (const id of ids) {
+      await cancelRemindersForPickup(id);
+    }
+  }, []);
+
+  const handleUnconfirm = useCallback(async (pickupId) => {
+    setConfirmationsState((prev) => {
+      const next = { ...prev };
+      delete next[pickupId];
+      setConfirmations(next);
+      return next;
+    });
+    setCountsState((prev) => {
+      const type = typeFromId(pickupId);
+      const next = { ...prev, [type]: Math.max(0, (prev[type] ?? 0) - 1) };
+      setCounts(next);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    const sub = addNotificationResponseListener(
+      (pickupIds) => handleConfirm(pickupIds),
+      (pickupIds) => {
+        // Snooze: kurz warten, dann greift die reguläre Eskalation erneut,
+        // da wir hier nichts zusätzlich planen müssen — die Erinnerung
+        // kommt gemäß Einstellungen ohnehin in Kürze wieder.
+      }
+    );
+    return () => sub.remove();
+  }, [handleConfirm]);
+
+  const pickups = getUpcomingPickups({ recurringSchedules, importedEvents, daysAhead: 21 });
+
+  const allTypes = Array.from(
+    new Set([
+      ...recurringSchedules.map((s) => s.type),
+      ...importedEvents.map((e) => e.type),
+      ...Object.keys(counts),
+    ])
+  );
+
+  useEffect(() => {
+    if (!initialized.current || !settings) return;
+    rescheduleAllReminders(pickups, confirmations, settings);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recurringSchedules, importedEvents, confirmations, settings]);
+
+  const handleAddSchedule = async (schedule) => {
+    const next = [...recurringSchedules, schedule];
+    setRecurringSchedulesState(next);
+    await setRecurringSchedules(next);
+  };
+
+  const handleDeleteSchedule = async (id) => {
+    const next = recurringSchedules.filter((s) => s.id !== id);
+    setRecurringSchedulesState(next);
+    await setRecurringSchedules(next);
+  };
+
+  const handleImport = async () => {
     try {
-      const geo = await geocodeCity(name);
-      const id = `${geo.lat}-${geo.lon}-${Date.now()}`;
-      const newCity = { id, ...geo, openMeteo: null, wttr: null };
-      setCities((prev) => [...prev, newCity]);
-      setInput('');
-
-      fetchOpenMeteo(geo.lat, geo.lon)
-        .then((weather) =>
-          setCities((prev) => prev.map((c) => (c.id === id ? { ...c, openMeteo: weather } : c)))
-        )
-        .catch(() =>
-          setCities((prev) => prev.map((c) => (c.id === id ? { ...c, openMeteoError: true } : c)))
-        );
-
-      fetchWttr(geo.lat, geo.lon)
-        .then((weather) =>
-          setCities((prev) => prev.map((c) => (c.id === id ? { ...c, wttr: weather } : c)))
-        )
-        .catch(() =>
-          setCities((prev) => prev.map((c) => (c.id === id ? { ...c, wttrError: true } : c)))
-        );
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['text/calendar', '*/*'],
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled || !result.assets?.[0]) return;
+      setImporting(true);
+      const content = await FileSystem.readAsStringAsync(result.assets[0].uri);
+      const events = parseIcs(content);
+      if (events.length === 0) {
+        Alert.alert('Keine Termine gefunden', 'Die Datei enthielt keine gültigen Termine.');
+        return;
+      }
+      const newEvents = events.map((e) => ({ type: e.summary || 'Abholung', date: e.date }));
+      const merged = [...importedEvents];
+      for (const ev of newEvents) {
+        if (!merged.some((m) => m.type === ev.type && m.date === ev.date)) {
+          merged.push(ev);
+        }
+      }
+      setImportedEventsState(merged);
+      await setImportedEvents(merged);
+      Alert.alert('Import erfolgreich', `${newEvents.length} Termine wurden importiert.`);
     } catch (e) {
-      setAddError(e.message || 'Fehler beim Suchen');
+      Alert.alert('Fehler beim Import', e.message ?? 'Unbekannter Fehler');
     } finally {
-      setAdding(false);
+      setImporting(false);
     }
   };
 
-  const removeCity = (id) => {
-    setCities((prev) => prev.filter((c) => c.id !== id));
-    if (selectedCityId === id) setSelectedCityId(null);
+  const handleClearImported = () => {
+    Alert.alert('Importierte Termine löschen?', '', [
+      { text: 'Abbrechen', style: 'cancel' },
+      {
+        text: 'Löschen',
+        style: 'destructive',
+        onPress: async () => {
+          setImportedEventsState([]);
+          await setImportedEvents([]);
+        },
+      },
+    ]);
   };
 
-  const selectedCity = cities.find((c) => c.id === selectedCityId);
-
-  if (selectedCity) {
-    return <CityDetail city={selectedCity} onBack={() => setSelectedCityId(null)} />;
-  }
+  const handleSettingsChange = async (next) => {
+    setSettingsState(next);
+    await setSettings(next);
+  };
 
   return (
     <KeyboardAvoidingView
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <Text style={styles.title}>Wetter</Text>
+      <Text style={styles.title}>Müllabfuhr</Text>
 
-      <View style={styles.inputRow}>
-        <TextInput
-          style={styles.input}
-          placeholder="Stadt eingeben (z.B. Berlin)"
-          placeholderTextColor="#888"
-          value={input}
-          onChangeText={setInput}
-          onSubmitEditing={addCity}
-          returnKeyType="search"
+      {tab === 'home' && (
+        <HomeTab
+          pickups={pickups}
+          confirmations={confirmations}
+          onConfirm={handleConfirm}
+          onUnconfirm={handleUnconfirm}
+          counts={counts}
+          types={allTypes}
+          loading={loading}
         />
-        <Pressable style={styles.addButton} onPress={addCity} disabled={adding}>
-          {adding ? <ActivityIndicator color="#fff" /> : <Text style={styles.addButtonText}>+</Text>}
-        </Pressable>
-      </View>
-      {addError ? <Text style={styles.errorText}>{addError}</Text> : null}
+      )}
+      {tab === 'schedules' && !loading && (
+        <SchedulesTab
+          recurringSchedules={recurringSchedules}
+          importedEvents={importedEvents}
+          onAddSchedule={handleAddSchedule}
+          onDeleteSchedule={handleDeleteSchedule}
+          onImport={handleImport}
+          onClearImported={handleClearImported}
+          importing={importing}
+        />
+      )}
+      {tab === 'settings' && settings && (
+        <SettingsTab settings={settings} onChange={handleSettingsChange} />
+      )}
 
-      <FlatList
-        data={cities}
-        keyExtractor={(item) => item.id}
-        renderItem={({ item }) => (
-          <CityListItem
-            city={item}
-            onPress={() => setSelectedCityId(item.id)}
-            onRemove={() => removeCity(item.id)}
-          />
-        )}
-        contentContainerStyle={styles.list}
-        ListEmptyComponent={<Text style={styles.emptyText}>Noch keine Stadt hinzugefügt.</Text>}
-      />
+      <View style={styles.tabBar}>
+        {[
+          { key: 'home', label: '🗓️ Übersicht' },
+          { key: 'schedules', label: '📋 Termine' },
+          { key: 'settings', label: '⚙️ Einstellungen' },
+        ].map((t) => (
+          <Pressable key={t.key} style={styles.tabBarItem} onPress={() => setTab(t.key)}>
+            <Text style={[styles.tabBarLabel, tab === t.key && styles.tabBarLabelActive]}>
+              {t.label}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+
+      <StatusBar style="light" />
     </KeyboardAvoidingView>
   );
 }
@@ -367,50 +601,22 @@ export default function App() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0d0d18',
+    backgroundColor: '#14141f',
   },
   title: {
-    fontSize: 34,
+    fontSize: 28,
     fontWeight: '700',
     color: '#fff',
     marginTop: 60,
-    marginBottom: 16,
+    marginBottom: 12,
     paddingHorizontal: 16,
   },
-  inputRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 8,
-    paddingHorizontal: 16,
-  },
-  input: {
+  centered: {
     flex: 1,
-    backgroundColor: '#24243a',
-    color: '#fff',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 12,
-    fontSize: 16,
-  },
-  addButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    backgroundColor: '#2ecc71',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  addButtonText: {
-    color: '#fff',
-    fontSize: 22,
-    fontWeight: 'bold',
-  },
-  errorText: {
-    color: '#ff8a80',
-    marginBottom: 8,
-    paddingHorizontal: 16,
-  },
-  list: {
+  tabContent: {
     paddingHorizontal: 16,
     paddingBottom: 40,
   },
@@ -418,188 +624,228 @@ const styles = StyleSheet.create({
     color: '#888',
     textAlign: 'center',
     marginTop: 40,
+    lineHeight: 20,
   },
-  listCard: {
-    borderRadius: 20,
-    padding: 16,
-    marginBottom: 12,
-  },
-  listCardTop: {
+  countersBar: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 16,
   },
-  listCityName: {
+  counterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#24243a',
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 8,
+  },
+  counterType: {
+    color: '#ccc',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  counterValue: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  pickupRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#24243a',
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 10,
+    gap: 12,
+  },
+  pickupRowUrgent: {
+    borderWidth: 1.5,
+    borderColor: '#e8c547',
+  },
+  colorDot: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+  },
+  pickupType: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  pickupDate: {
+    color: '#999',
+    fontSize: 13,
+    marginTop: 2,
+  },
+  holidayWarning: {
+    color: '#e8c547',
+    fontSize: 12,
+    marginTop: 4,
+  },
+  confirmButton: {
+    backgroundColor: '#2ecc71',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  confirmButtonText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  confirmedBadge: {
+    color: '#2ecc71',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  sectionTitle: {
+    color: '#fff',
+    fontSize: 17,
+    fontWeight: '700',
+    marginTop: 22,
+    marginBottom: 10,
+  },
+  fieldLabel: {
+    color: '#999',
+    fontSize: 13,
+    marginTop: 14,
+    marginBottom: 8,
+  },
+  importButton: {
+    backgroundColor: '#3a7bd5',
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  importButtonText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 15,
+  },
+  linkText: {
+    color: '#e74c3c',
+    fontSize: 13,
+    textAlign: 'center',
+  },
+  chipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  chip: {
+    backgroundColor: '#24243a',
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  chipActive: {
+    backgroundColor: '#2ecc71',
+  },
+  chipText: {
+    color: '#ccc',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  chipTextActive: {
+    color: '#fff',
+  },
+  input: {
+    backgroundColor: '#24243a',
+    color: '#fff',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+    fontSize: 15,
+    marginTop: 10,
+  },
+  dateButton: {
+    backgroundColor: '#24243a',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+  },
+  dateButtonText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  addButton: {
+    backgroundColor: '#2ecc71',
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 18,
+  },
+  addButtonText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 15,
+  },
+  scheduleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#24243a',
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 8,
+    gap: 12,
+  },
+  removeText: {
+    color: '#777',
+    fontSize: 16,
+  },
+  stepperRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
+  stepperButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: '#24243a',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepperButtonText: {
     color: '#fff',
     fontSize: 20,
     fontWeight: '700',
   },
-  listCondition: {
-    color: 'rgba(255,255,255,0.85)',
-    fontSize: 13,
-    marginTop: 2,
-  },
-  removeText: {
-    color: 'rgba(255,255,255,0.6)',
-    fontSize: 16,
-  },
-  listCardBottom: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-end',
-    marginTop: 18,
-  },
-  listEmoji: {
-    fontSize: 30,
-  },
-  listTemp: {
-    color: '#fff',
-    fontSize: 40,
-    fontWeight: '300',
-  },
-  listHiLo: {
-    color: 'rgba(255,255,255,0.85)',
-    fontSize: 12,
-    marginTop: 4,
-    textAlign: 'right',
-  },
-  gradientContainer: {
-    flex: 1,
-  },
-  detailScroll: {
-    paddingHorizontal: 16,
-    paddingBottom: 50,
-    alignItems: 'center',
-  },
-  backButtonWrap: {
-    alignSelf: 'flex-start',
-    marginTop: 55,
-    marginBottom: 6,
-  },
-  backButton: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '500',
-  },
-  detailCity: {
-    color: '#fff',
-    fontSize: 28,
-    fontWeight: '600',
-    marginTop: 8,
-  },
-  hugeTemp: {
-    color: '#fff',
-    fontSize: 88,
-    fontWeight: '200',
-    marginTop: -4,
-  },
-  conditionText: {
-    color: '#fff',
-    fontSize: 18,
-    marginTop: -6,
-  },
-  hiLoText: {
-    color: 'rgba(255,255,255,0.9)',
-    fontSize: 15,
-    marginTop: 4,
-    marginBottom: 20,
-  },
-  glassCard: {
-    width: '100%',
-    backgroundColor: 'rgba(255,255,255,0.18)',
-    borderRadius: 18,
-    padding: 14,
-    marginBottom: 16,
-  },
-  glassCardLabel: {
-    color: 'rgba(255,255,255,0.75)',
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-    marginBottom: 10,
-  },
-  hourlyItem: {
-    alignItems: 'center',
-  },
-  hourlyTime: {
-    color: 'rgba(255,255,255,0.85)',
-    fontSize: 13,
-    marginBottom: 8,
-  },
-  hourlyEmoji: {
-    fontSize: 22,
-    marginBottom: 8,
-  },
-  hourlyTemp: {
+  stepperValue: {
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
-  },
-  dailyRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 8,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(255,255,255,0.2)',
-  },
-  dailyDay: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
-    width: 55,
-  },
-  dailyEmoji: {
-    fontSize: 18,
-    width: 34,
+    minWidth: 70,
     textAlign: 'center',
   },
-  dailyMin: {
-    color: 'rgba(255,255,255,0.7)',
-    fontSize: 14,
-    width: 32,
-    textAlign: 'right',
+  hintText: {
+    color: '#777',
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 24,
   },
-  barTrack: {
-    flex: 1,
-    height: 4,
-    backgroundColor: 'rgba(255,255,255,0.25)',
-    borderRadius: 2,
-    marginHorizontal: 8,
-  },
-  barFill: {
-    position: 'absolute',
-    height: 4,
-    backgroundColor: '#ffd166',
-    borderRadius: 2,
-  },
-  dailyMax: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
-    width: 32,
-  },
-  tileGrid: {
-    width: '100%',
+  tabBar: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#333',
+    backgroundColor: '#1a1a28',
+    paddingBottom: Platform.OS === 'ios' ? 54 : 10,
+    paddingTop: 10,
   },
-  infoTile: {
-    width: '47%',
-    backgroundColor: 'rgba(255,255,255,0.18)',
-    borderRadius: 16,
-    padding: 14,
+  tabBarItem: {
+    flex: 1,
+    alignItems: 'center',
   },
-  infoLabel: {
-    color: 'rgba(255,255,255,0.75)',
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-    marginBottom: 6,
-  },
-  infoValue: {
-    color: '#fff',
-    fontSize: 22,
+  tabBarLabel: {
+    color: '#777',
+    fontSize: 12,
     fontWeight: '600',
+  },
+  tabBarLabelActive: {
+    color: '#2ecc71',
   },
 });
