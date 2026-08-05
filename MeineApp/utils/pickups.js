@@ -20,14 +20,13 @@ function parseDateKey(dateKey) {
   return new Date(y, m - 1, d);
 }
 
-export function generateRecurringOccurrences(schedule, daysAhead = 30) {
-  const today = startOfDay(new Date());
-  const rangeEnd = new Date(today.getTime() + daysAhead * MS_PER_DAY);
+// Erzeugt alle Vorkommen eines wiederkehrenden Termins innerhalb [rangeStart, rangeEnd].
+function generateOccurrencesBetween(schedule, rangeStart, rangeEnd) {
   const intervalDays = schedule.intervalWeeks * 7;
   const start = startOfDay(parseDateKey(schedule.startDate));
 
   const occurrences = [];
-  const diffDays = Math.round((today.getTime() - start.getTime()) / MS_PER_DAY);
+  const diffDays = Math.round((rangeStart.getTime() - start.getTime()) / MS_PER_DAY);
   let firstOccurrence;
   if (diffDays <= 0) {
     firstOccurrence = start;
@@ -38,10 +37,16 @@ export function generateRecurringOccurrences(schedule, daysAhead = 30) {
 
   let cursor = firstOccurrence;
   while (cursor <= rangeEnd) {
-    occurrences.push(toDateKey(cursor));
+    if (cursor >= rangeStart) occurrences.push(toDateKey(cursor));
     cursor = new Date(cursor.getTime() + intervalDays * MS_PER_DAY);
   }
   return occurrences;
+}
+
+export function generateRecurringOccurrences(schedule, daysAhead = 30) {
+  const today = startOfDay(new Date());
+  const rangeEnd = new Date(today.getTime() + daysAhead * MS_PER_DAY);
+  return generateOccurrencesBetween(schedule, today, rangeEnd);
 }
 
 export function getUpcomingPickups({ recurringSchedules, importedEvents, daysAhead = 30 }) {
@@ -73,6 +78,36 @@ export function getUpcomingPickups({ recurringSchedules, importedEvents, daysAhe
   return list;
 }
 
+// Termine, deren Datum in der Vergangenheit liegt (für's Archiv, damit man
+// nachträglich noch bestätigen/ändern kann).
+export function getPastPickups({ recurringSchedules, importedEvents, daysBack = 30 }) {
+  const today = startOfDay(new Date());
+  const rangeStart = new Date(today.getTime() - daysBack * MS_PER_DAY);
+  const rangeEnd = new Date(today.getTime() - MS_PER_DAY); // gestern
+  const rangeStartKey = toDateKey(rangeStart);
+  const todayKey = toDateKey(today);
+
+  const map = new Map();
+
+  for (const schedule of recurringSchedules) {
+    const dates = generateOccurrencesBetween(schedule, rangeStart, rangeEnd);
+    for (const date of dates) {
+      const id = `${schedule.type}__${date}`;
+      map.set(id, { id, type: schedule.type, date });
+    }
+  }
+
+  for (const event of importedEvents) {
+    if (event.date < rangeStartKey || event.date >= todayKey) continue;
+    const id = `${event.type}__${event.date}`;
+    map.set(id, { id, type: event.type, date: event.date });
+  }
+
+  const list = Array.from(map.values());
+  list.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  return list;
+}
+
 export function daysFromToday(dateKey) {
   const today = startOfDay(new Date());
   const target = startOfDay(parseDateKey(dateKey));
@@ -84,5 +119,10 @@ export function formatRelativeDay(dateKey) {
   if (diff === 0) return 'Heute';
   if (diff === 1) return 'Morgen';
   const date = parseDateKey(dateKey);
-  return date.toLocaleDateString('de-DE', { weekday: 'long', day: '2-digit', month: '2-digit' });
+  return date.toLocaleDateString('de-DE', {
+    weekday: 'long',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  });
 }

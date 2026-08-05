@@ -11,6 +11,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
+  Modal,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as DocumentPicker from 'expo-document-picker';
@@ -18,8 +19,15 @@ import * as FileSystem from 'expo-file-system';
 import DateTimePicker from '@react-native-community/datetimepicker';
 
 import { parseIcs } from './utils/ics';
+import { searchBremenStreets, fetchBremenCalendar } from './utils/bremenApi';
+import { getYearlyBreakdown, getCurrentYearCount } from './utils/yearlyCounts';
 import { colorForType } from './utils/colors';
-import { getUpcomingPickups, formatRelativeDay, daysFromToday } from './utils/pickups';
+import {
+  getUpcomingPickups,
+  getPastPickups,
+  formatRelativeDay,
+  daysFromToday,
+} from './utils/pickups';
 import {
   getRecurringSchedules,
   setRecurringSchedules,
@@ -31,6 +39,15 @@ import {
   setSettings,
   getCounts,
   setCounts,
+  getHistory,
+  setHistory,
+  getAdjustments,
+  setAdjustments,
+  getSkipped,
+  setSkipped,
+  getYearlyTargets,
+  setYearlyTargets,
+  MAX_PHASES,
 } from './utils/storage';
 import {
   setupNotifications,
@@ -46,6 +63,7 @@ const INTERVAL_OPTIONS = [
 ];
 
 const TYPE_PRESETS = ['Restmüll', 'Biomüll', 'Papier', 'Gelber Sack'];
+const ONE_TIME_TYPE_PRESETS = ['Sperrmüll', 'Weihnachtsbaum'];
 
 function dateKeyFromDate(date) {
   const y = date.getFullYear();
@@ -61,55 +79,276 @@ function formatDateKeyDisplay(dateKey) {
 
 // ---------- Übersicht ----------
 
-function PickupRow({ pickup, confirmed, onConfirm, onUnconfirm }) {
+function PickupRow({ pickup, confirmed, skipped, onConfirm, onUnconfirm, onSkip, onUnskip }) {
   const color = colorForType(pickup.type);
   const diff = daysFromToday(pickup.date);
-  const urgent = diff <= 1 && !confirmed;
-  const canConfirmYet = diff <= 1;
+  const urgent = diff <= 1 && !confirmed && !skipped;
+  const canActYet = diff <= 1;
+  const dateLabel =
+    diff <= 1
+      ? `${formatRelativeDay(pickup.date)} · ${formatDateKeyDisplay(pickup.date)}`
+      : formatRelativeDay(pickup.date);
 
   return (
     <View style={[styles.pickupRow, urgent && styles.pickupRowUrgent]}>
       <View style={[styles.colorDot, { backgroundColor: color }]} />
       <View style={{ flex: 1 }}>
         <Text style={styles.pickupType}>{pickup.type}</Text>
-        <Text style={styles.pickupDate}>
-          {formatRelativeDay(pickup.date)} · {formatDateKeyDisplay(pickup.date)}
-        </Text>
+        <Text style={styles.pickupDate}>{dateLabel}</Text>
         {pickup.holidayName && (
           <Text style={styles.holidayWarning}>
             ⚠️ {pickup.holidayName} — Termin evtl. verschoben, bitte prüfen
           </Text>
         )}
       </View>
-      {confirmed ? (
-        <Pressable onPress={() => onUnconfirm(pickup.id)} hitSlop={8}>
-          <Text style={styles.confirmedBadge}>✓ Draußen</Text>
-        </Pressable>
-      ) : canConfirmYet ? (
-        <Pressable style={styles.confirmButton} onPress={() => onConfirm(pickup.id)}>
-          <Text style={styles.confirmButtonText}>Draußen</Text>
-        </Pressable>
-      ) : null}
+      <View style={styles.pickupActions}>
+        {confirmed ? (
+          <Pressable onPress={() => onUnconfirm(pickup.id)} hitSlop={8}>
+            <Text style={styles.confirmedBadge}>✓ Draußen</Text>
+          </Pressable>
+        ) : skipped ? (
+          <Pressable onPress={() => onUnskip(pickup.id)} hitSlop={8}>
+            <Text style={styles.skippedBadge}>⏭ Übersprungen</Text>
+          </Pressable>
+        ) : canActYet ? (
+          <>
+            <Pressable style={styles.confirmButton} onPress={() => onConfirm(pickup.id)}>
+              <Text style={styles.confirmButtonText}>Draußen</Text>
+            </Pressable>
+            <Pressable style={styles.skipButton} onPress={() => onSkip(pickup.id)}>
+              <Text style={styles.skipButtonText}>Diesmal nicht</Text>
+            </Pressable>
+          </>
+        ) : null}
+      </View>
     </View>
   );
 }
 
-function CountersBar({ counts, types }) {
+function CountersBar({ history, adjustments, yearlyTargets, types, onSelect }) {
   if (types.length === 0) return null;
   return (
     <View style={styles.countersBar}>
-      {types.map((type) => (
-        <View key={type} style={styles.counterChip}>
-          <View style={[styles.colorDot, { backgroundColor: colorForType(type) }]} />
-          <Text style={styles.counterType}>{type}</Text>
-          <Text style={styles.counterValue}>{counts[type] ?? 0}×</Text>
-        </View>
-      ))}
+      {types.map((type) => {
+        const current = getCurrentYearCount(history[type] ?? [], adjustments[type] ?? {});
+        const target = yearlyTargets[type];
+        return (
+          <Pressable key={type} style={styles.counterChip} onPress={() => onSelect(type)}>
+            <View style={[styles.colorDot, { backgroundColor: colorForType(type) }]} />
+            <Text style={styles.counterType}>{type}</Text>
+            <Text style={styles.counterValue}>
+              {current}
+              {target ? ` / ${target}` : ''}×
+            </Text>
+          </Pressable>
+        );
+      })}
     </View>
   );
 }
 
-function HomeTab({ pickups, confirmations, onConfirm, onUnconfirm, counts, types, loading }) {
+function CounterDetailModal({
+  type,
+  count,
+  history,
+  adjustments,
+  target,
+  onAdjust,
+  onSetTarget,
+  onClose,
+}) {
+  const visible = !!type;
+  const breakdown = getYearlyBreakdown(history ?? [], adjustments ?? {});
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.modalBackdrop} onPress={onClose}>
+        <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
+          <View style={styles.modalHeader}>
+            <View style={[styles.colorDot, { backgroundColor: type ? colorForType(type) : '#666' }]} />
+            <Text style={styles.modalTitle}>{type}</Text>
+          </View>
+
+          <View style={styles.modalCounterRow}>
+            <Pressable style={styles.stepperButton} onPress={() => onAdjust(type, -1)}>
+              <Text style={styles.stepperButtonText}>−</Text>
+            </Pressable>
+            <Text style={styles.modalCounterValue}>{count}×</Text>
+            <Pressable style={styles.stepperButton} onPress={() => onAdjust(type, 1)}>
+              <Text style={styles.stepperButtonText}>+</Text>
+            </Pressable>
+          </View>
+          <Text style={styles.modalHint}>Zähler manuell anpassen (gesamt)</Text>
+
+          <View style={styles.modalTargetRow}>
+            <Text style={styles.modalTargetLabel}>Ziel pro Jahr</Text>
+            <View style={styles.modalCounterRow}>
+              <Pressable
+                style={styles.stepperButtonSmall}
+                onPress={() => onSetTarget(type, Math.max(0, (target ?? 0) - 1))}
+              >
+                <Text style={styles.stepperButtonText}>−</Text>
+              </Pressable>
+              <Text style={styles.modalTargetValue}>{target ? target : '–'}</Text>
+              <Pressable
+                style={styles.stepperButtonSmall}
+                onPress={() => onSetTarget(type, (target ?? 0) + 1)}
+              >
+                <Text style={styles.stepperButtonText}>+</Text>
+              </Pressable>
+            </View>
+          </View>
+
+          <ScrollView style={styles.modalHistoryList}>
+            {breakdown.length === 0 ? (
+              <Text style={styles.modalEmptyText}>Noch keine Bestätigungen erfasst.</Text>
+            ) : (
+              breakdown.map(({ year, total, historyDates, adjustments: yearAdj }) => (
+                <View key={year} style={{ marginBottom: 14 }}>
+                  <View style={styles.modalYearHeader}>
+                    <Text style={styles.modalYearTitle}>{year}</Text>
+                    <Text style={styles.modalYearTotal}>
+                      {total}
+                      {target ? ` / ${target}` : ''}×
+                    </Text>
+                  </View>
+                  {historyDates.map((dateKey) => (
+                    <Text key={dateKey} style={styles.modalHistoryItem}>
+                      {formatDateKeyDisplay(dateKey)} — ✓ bestätigt
+                    </Text>
+                  ))}
+                  {yearAdj.map(([dateKey, net]) => (
+                    <Text key={dateKey} style={styles.modalHistoryItem}>
+                      {formatDateKeyDisplay(dateKey)} — {net > 0 ? `+${net}` : net} (manuell)
+                    </Text>
+                  ))}
+                </View>
+              ))
+            )}
+          </ScrollView>
+
+          <Pressable style={styles.modalCloseButton} onPress={onClose}>
+            <Text style={styles.modalCloseButtonText}>Schließen</Text>
+          </Pressable>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+function buildArchiveList(history) {
+  const items = [];
+  for (const [type, dates] of Object.entries(history)) {
+    for (const date of dates) {
+      items.push({ id: `${type}__${date}`, type, date });
+    }
+  }
+  items.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  return items;
+}
+
+function ArchiveRow({ item, status, onRequestConfirm, onRequestUndo }) {
+  return (
+    <View style={styles.archiveRow}>
+      <View style={[styles.colorDot, { backgroundColor: colorForType(item.type) }]} />
+      <View style={{ flex: 1 }}>
+        <Text style={styles.archiveType}>{item.type}</Text>
+        <Text style={styles.archiveDate}>
+          {formatDateKeyDisplay(item.date)}
+          {status === 'open' ? ' — nicht bestätigt' : status === 'skipped' ? ' — übersprungen' : ''}
+        </Text>
+      </View>
+      {status === 'confirmed' ? (
+        <Pressable onPress={() => onRequestUndo(item)} hitSlop={8}>
+          <Text style={styles.archiveUndo}>Rückgängig</Text>
+        </Pressable>
+      ) : (
+        <Pressable onPress={() => onRequestConfirm(item)} hitSlop={8}>
+          <Text style={styles.archiveConfirm}>Bestätigen</Text>
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
+function ArchiveSection({ pastPickups, history, confirmations, skipped, onConfirm, onUndo }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const merged = new Map();
+  for (const p of pastPickups) merged.set(p.id, p);
+  for (const h of buildArchiveList(history)) merged.set(h.id, h);
+  const items = Array.from(merged.values()).sort((a, b) =>
+    a.date < b.date ? 1 : a.date > b.date ? -1 : 0
+  );
+
+  if (items.length === 0) return null;
+
+  const requestConfirm = (item) => {
+    Alert.alert(
+      'Nachträglich bestätigen?',
+      `"${item.type}" vom ${formatDateKeyDisplay(item.date)} wird als "draußen" bestätigt und der Zähler entsprechend erhöht.`,
+      [
+        { text: 'Abbrechen', style: 'cancel' },
+        { text: 'Bestätigen', onPress: () => onConfirm(item.id) },
+      ]
+    );
+  };
+
+  const requestUndo = (item) => {
+    Alert.alert(
+      'Eintrag zurücknehmen?',
+      `"${item.type}" vom ${formatDateKeyDisplay(item.date)} wird wieder als nicht bestätigt markiert und der Zähler entsprechend angepasst.`,
+      [
+        { text: 'Abbrechen', style: 'cancel' },
+        { text: 'Zurücknehmen', style: 'destructive', onPress: () => onUndo(item.id) },
+      ]
+    );
+  };
+
+  return (
+    <View style={styles.archiveSection}>
+      <Pressable style={styles.archiveHeader} onPress={() => setExpanded((e) => !e)}>
+        <Text style={styles.archiveTitle}>🗄️ Archiv ({items.length})</Text>
+        <Text style={styles.archiveToggle}>{expanded ? '▲' : '▼'}</Text>
+      </Pressable>
+      {expanded &&
+        items.map((item) => {
+          const status = confirmations[item.id]
+            ? 'confirmed'
+            : skipped[item.id]
+              ? 'skipped'
+              : 'open';
+          return (
+            <ArchiveRow
+              key={item.id}
+              item={item}
+              status={status}
+              onRequestConfirm={requestConfirm}
+              onRequestUndo={requestUndo}
+            />
+          );
+        })}
+    </View>
+  );
+}
+
+function HomeTab({
+  pickups,
+  confirmations,
+  onConfirm,
+  onUnconfirm,
+  skipped,
+  onSkip,
+  onUnskip,
+  counts,
+  types,
+  onSelectCounter,
+  history,
+  adjustments,
+  yearlyTargets,
+  pastPickups,
+  loading,
+}) {
   if (loading) {
     return (
       <View style={styles.centered}>
@@ -122,13 +361,24 @@ function HomeTab({ pickups, confirmations, onConfirm, onUnconfirm, counts, types
       data={pickups}
       keyExtractor={(item) => item.id}
       contentContainerStyle={styles.tabContent}
-      ListHeaderComponent={<CountersBar counts={counts} types={types} />}
+      ListHeaderComponent={
+        <CountersBar
+          history={history}
+          adjustments={adjustments}
+          yearlyTargets={yearlyTargets}
+          types={types}
+          onSelect={onSelectCounter}
+        />
+      }
       renderItem={({ item }) => (
         <PickupRow
           pickup={item}
           confirmed={!!confirmations[item.id]}
+          skipped={!!skipped[item.id]}
           onConfirm={onConfirm}
           onUnconfirm={onUnconfirm}
+          onSkip={onSkip}
+          onUnskip={onUnskip}
         />
       )}
       ListEmptyComponent={
@@ -136,11 +386,120 @@ function HomeTab({ pickups, confirmations, onConfirm, onUnconfirm, counts, types
           Noch keine Termine. Leg unter "Termine" welche an oder importiere eine ICS-Datei.
         </Text>
       }
+      ListFooterComponent={
+        <ArchiveSection
+          pastPickups={pastPickups}
+          history={history}
+          confirmations={confirmations}
+          skipped={skipped}
+          onConfirm={onConfirm}
+          onUndo={onUnconfirm}
+        />
+      }
     />
   );
 }
 
 // ---------- Termine verwalten ----------
+
+function BremenAutoImport({ onBremenImport }) {
+  const [street, setStreet] = useState('');
+  const [houseNo, setHouseNo] = useState('');
+  const [suggestions, setSuggestions] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const debounceRef = useRef(null);
+
+  const onChangeStreet = (text) => {
+    setStreet(text);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (text.trim().length < 2) {
+      setSuggestions([]);
+      return;
+    }
+    debounceRef.current = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const results = await searchBremenStreets(text);
+        setSuggestions(results);
+      } catch {
+        setSuggestions([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 400);
+  };
+
+  const handleLoad = async () => {
+    if (!street.trim() || !houseNo.trim()) {
+      Alert.alert('Angaben fehlen', 'Bitte Straße und Hausnummer eingeben.');
+      return;
+    }
+    setLoading(true);
+    try {
+      const addedCount = await onBremenImport(street.trim(), houseNo.trim());
+      Alert.alert('Termine geladen', `${addedCount} Termine wurden übernommen.`);
+      setSuggestions([]);
+    } catch (e) {
+      Alert.alert('Fehler', e.message ?? 'Termine konnten nicht geladen werden.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <View>
+      <Text style={styles.sectionTitle}>Automatisch laden (Bremen)</Text>
+      <Text style={styles.hintText}>
+        Zieht Restmüll, Biomüll, Papier, Gelber Sack und Weihnachtsbaum-Termine direkt von
+        der Bremer Stadtreinigung, inkl. feiertagsbedingter Verschiebungen.
+      </Text>
+      <TextInput
+        style={styles.input}
+        placeholder="Straße"
+        placeholderTextColor="#888"
+        value={street}
+        onChangeText={onChangeStreet}
+      />
+      {suggestions.length > 0 && (
+        <View style={styles.suggestionBox}>
+          {suggestions.map((s) => (
+            <Pressable
+              key={s.id}
+              style={styles.suggestionRow}
+              onPress={() => {
+                setStreet(s.name);
+                setSuggestions([]);
+              }}
+            >
+              <Text style={styles.suggestionText}>
+                {s.name} {s.plz ? `(${s.plz})` : ''}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+      {searching && <ActivityIndicator color="#8ab4f8" style={{ marginTop: 4 }} />}
+
+      <TextInput
+        style={[styles.input, { marginTop: 8 }]}
+        placeholder="Hausnummer"
+        placeholderTextColor="#888"
+        value={houseNo}
+        onChangeText={setHouseNo}
+        keyboardType="numbers-and-punctuation"
+      />
+
+      <Pressable style={styles.importButton} onPress={handleLoad} disabled={loading}>
+        {loading ? (
+          <ActivityIndicator color="#fff" />
+        ) : (
+          <Text style={styles.importButtonText}>📍 Termine automatisch laden</Text>
+        )}
+      </Pressable>
+    </View>
+  );
+}
 
 function SchedulesTab({
   recurringSchedules,
@@ -149,28 +508,40 @@ function SchedulesTab({
   onDeleteSchedule,
   onImport,
   onClearImported,
+  onDeleteImportedEvent,
   importing,
+  onBremenImport,
+  onAddOneTime,
 }) {
+  const [mode, setMode] = useState('recurring'); // 'recurring' | 'once'
+  const [showImportedList, setShowImportedList] = useState(false);
   const [type, setType] = useState(TYPE_PRESETS[0]);
   const [customType, setCustomType] = useState('');
   const [intervalWeeks, setIntervalWeeks] = useState(2);
   const [startDate, setStartDate] = useState(new Date());
   const [showPicker, setShowPicker] = useState(false);
 
+  const presets = mode === 'recurring' ? TYPE_PRESETS : ONE_TIME_TYPE_PRESETS;
   const finalType = customType.trim() || type;
 
   const handleAdd = () => {
-    onAddSchedule({
-      id: `${finalType}-${Date.now()}`,
-      type: finalType,
-      intervalWeeks,
-      startDate: dateKeyFromDate(startDate),
-    });
+    if (mode === 'recurring') {
+      onAddSchedule({
+        id: `${finalType}-${Date.now()}`,
+        type: finalType,
+        intervalWeeks,
+        startDate: dateKeyFromDate(startDate),
+      });
+    } else {
+      onAddOneTime({ type: finalType, date: dateKeyFromDate(startDate) });
+    }
     setCustomType('');
   };
 
   return (
     <ScrollView contentContainerStyle={styles.tabContent}>
+      <BremenAutoImport onBremenImport={onBremenImport} />
+
       <Text style={styles.sectionTitle}>ICS-Kalender importieren</Text>
       <Pressable style={styles.importButton} onPress={onImport} disabled={importing}>
         {importing ? (
@@ -180,17 +551,71 @@ function SchedulesTab({
         )}
       </Pressable>
       {importedEvents.length > 0 && (
-        <Pressable onPress={onClearImported} style={{ marginTop: 8 }}>
-          <Text style={styles.linkText}>
-            {importedEvents.length} importierte Termine löschen
-          </Text>
-        </Pressable>
+        <>
+          <Pressable
+            style={styles.archiveHeader}
+            onPress={() => setShowImportedList((v) => !v)}
+          >
+            <Text style={styles.archiveTitle}>
+              📋 {importedEvents.length} importierte Termine
+            </Text>
+            <Text style={styles.archiveToggle}>{showImportedList ? '▲' : '▼'}</Text>
+          </Pressable>
+          {showImportedList &&
+            [...importedEvents]
+              .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+              .map((e) => (
+                <View key={`${e.type}__${e.date}`} style={styles.scheduleRow}>
+                  <View style={[styles.colorDot, { backgroundColor: colorForType(e.type) }]} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.pickupType}>{e.type}</Text>
+                    <Text style={styles.pickupDate}>{formatDateKeyDisplay(e.date)}</Text>
+                  </View>
+                  <Pressable
+                    onPress={() => onDeleteImportedEvent(e.type, e.date)}
+                    hitSlop={10}
+                  >
+                    <Text style={styles.removeText}>✕</Text>
+                  </Pressable>
+                </View>
+              ))}
+          <Pressable onPress={onClearImported} style={{ marginTop: 8 }}>
+            <Text style={styles.linkText}>Alle importierten Termine löschen</Text>
+          </Pressable>
+        </>
       )}
 
-      <Text style={styles.sectionTitle}>Neuer wiederkehrender Termin</Text>
+      <Text style={styles.sectionTitle}>Neuer Termin</Text>
 
       <View style={styles.chipRow}>
-        {TYPE_PRESETS.map((t) => (
+        <Pressable
+          style={[styles.chip, mode === 'recurring' && styles.chipActive]}
+          onPress={() => {
+            setMode('recurring');
+            setType(TYPE_PRESETS[0]);
+            setCustomType('');
+          }}
+        >
+          <Text style={[styles.chipText, mode === 'recurring' && styles.chipTextActive]}>
+            Wiederkehrend
+          </Text>
+        </Pressable>
+        <Pressable
+          style={[styles.chip, mode === 'once' && styles.chipActive]}
+          onPress={() => {
+            setMode('once');
+            setType(ONE_TIME_TYPE_PRESETS[0]);
+            setCustomType('');
+          }}
+        >
+          <Text style={[styles.chipText, mode === 'once' && styles.chipTextActive]}>
+            Einmalig (z.B. Sperrmüll)
+          </Text>
+        </Pressable>
+      </View>
+
+      <View style={[styles.chipRow, { marginTop: 10 }]}>
+        {presets.map((t) => (
           <Pressable
             key={t}
             style={[styles.chip, type === t && !customType && styles.chipActive]}
@@ -213,41 +638,54 @@ function SchedulesTab({
         onChangeText={setCustomType}
       />
 
-      <Text style={styles.fieldLabel}>Rhythmus</Text>
-      <View style={styles.chipRow}>
-        {INTERVAL_OPTIONS.map((opt) => (
-          <Pressable
-            key={opt.weeks}
-            style={[styles.chip, intervalWeeks === opt.weeks && styles.chipActive]}
-            onPress={() => setIntervalWeeks(opt.weeks)}
-          >
-            <Text
-              style={[
-                styles.chipText,
-                intervalWeeks === opt.weeks && styles.chipTextActive,
-              ]}
-            >
-              {opt.label}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
+      {mode === 'recurring' && (
+        <>
+          <Text style={styles.fieldLabel}>Rhythmus</Text>
+          <View style={styles.chipRow}>
+            {INTERVAL_OPTIONS.map((opt) => (
+              <Pressable
+                key={opt.weeks}
+                style={[styles.chip, intervalWeeks === opt.weeks && styles.chipActive]}
+                onPress={() => setIntervalWeeks(opt.weeks)}
+              >
+                <Text
+                  style={[
+                    styles.chipText,
+                    intervalWeeks === opt.weeks && styles.chipTextActive,
+                  ]}
+                >
+                  {opt.label}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </>
+      )}
 
-      <Text style={styles.fieldLabel}>Erster Abholtermin</Text>
+      <Text style={styles.fieldLabel}>
+        {mode === 'recurring' ? 'Erster Abholtermin' : 'Abholdatum'}
+      </Text>
       <Pressable style={styles.dateButton} onPress={() => setShowPicker(true)}>
         <Text style={styles.dateButtonText}>{dateKeyFromDate(startDate)}</Text>
       </Pressable>
       {showPicker && (
-        <DateTimePicker
-          value={startDate}
-          mode="date"
-          themeVariant="dark"
-          display={Platform.OS === 'ios' ? 'inline' : 'default'}
-          onChange={(event, selected) => {
-            setShowPicker(Platform.OS === 'ios');
-            if (selected) setStartDate(selected);
-          }}
-        />
+        <>
+          <DateTimePicker
+            value={startDate}
+            mode="date"
+            themeVariant="dark"
+            display={Platform.OS === 'ios' ? 'inline' : 'default'}
+            onChange={(event, selected) => {
+              if (Platform.OS !== 'ios') setShowPicker(false);
+              if (selected) setStartDate(selected);
+            }}
+          />
+          {Platform.OS === 'ios' && (
+            <Pressable style={styles.pickerDoneButton} onPress={() => setShowPicker(false)}>
+              <Text style={styles.pickerDoneButtonText}>Fertig</Text>
+            </Pressable>
+          )}
+        </>
       )}
 
       <Pressable style={styles.addButton} onPress={handleAdd}>
@@ -296,49 +734,59 @@ function Stepper({ value, onChange, min = 1, max = 60, suffix = '' }) {
   );
 }
 
-function SettingsTab({ settings, onChange }) {
-  const [showTimePicker, setShowTimePicker] = useState(false);
-  const [h, m] = settings.reminderTime.split(':').map(Number);
+function PhaseRow({
+  phase,
+  index,
+  showPicker,
+  onShowPicker,
+  onHidePicker,
+  onChangeTime,
+  onChangeInterval,
+  onChangeDayMode,
+  onRemove,
+  canRemove,
+}) {
+  const [h, m] = phase.time.split(':').map(Number);
   const timeAsDate = new Date();
   timeAsDate.setHours(h, m, 0, 0);
 
   return (
-    <ScrollView contentContainerStyle={styles.tabContent}>
-      <Text style={styles.sectionTitle}>Wann soll erinnert werden?</Text>
+    <View style={styles.phaseCard}>
+      <View style={styles.phaseHeader}>
+        <Text style={styles.phaseLabel}>Zeitraum {index + 1}</Text>
+        {canRemove && (
+          <Pressable onPress={onRemove} hitSlop={10}>
+            <Text style={styles.removeText}>✕</Text>
+          </Pressable>
+        )}
+      </View>
+
+      <Text style={styles.fieldLabel}>Bezieht sich auf</Text>
       <View style={styles.chipRow}>
         <Pressable
-          style={[styles.chip, settings.reminderMode === 'evening' && styles.chipActive]}
-          onPress={() => onChange({ ...settings, reminderMode: 'evening' })}
+          style={[styles.chip, phase.dayMode === 'evening' && styles.chipActive]}
+          onPress={() => onChangeDayMode('evening')}
         >
-          <Text
-            style={[
-              styles.chipText,
-              settings.reminderMode === 'evening' && styles.chipTextActive,
-            ]}
-          >
-            Am Vorabend
+          <Text style={[styles.chipText, phase.dayMode === 'evening' && styles.chipTextActive]}>
+            Vorabend
           </Text>
         </Pressable>
         <Pressable
-          style={[styles.chip, settings.reminderMode === 'morning' && styles.chipActive]}
-          onPress={() => onChange({ ...settings, reminderMode: 'morning' })}
+          style={[styles.chip, phase.dayMode === 'pickupDay' && styles.chipActive]}
+          onPress={() => onChangeDayMode('pickupDay')}
         >
-          <Text
-            style={[
-              styles.chipText,
-              settings.reminderMode === 'morning' && styles.chipTextActive,
-            ]}
-          >
-            Am Abholtag
+          <Text style={[styles.chipText, phase.dayMode === 'pickupDay' && styles.chipTextActive]}>
+            Abholtag
           </Text>
         </Pressable>
       </View>
 
-      <Text style={styles.fieldLabel}>Uhrzeit der ersten Erinnerung</Text>
-      <Pressable style={styles.dateButton} onPress={() => setShowTimePicker(true)}>
-        <Text style={styles.dateButtonText}>{settings.reminderTime} Uhr</Text>
+      <Text style={styles.fieldLabel}>Ab Uhrzeit</Text>
+      <Pressable style={styles.dateButton} onPress={onShowPicker}>
+        <Text style={styles.dateButtonText}>{phase.time} Uhr</Text>
       </Pressable>
-      {showTimePicker && (
+      {showPicker && (
+        <>
         <DateTimePicker
           value={timeAsDate}
           mode="time"
@@ -346,34 +794,129 @@ function SettingsTab({ settings, onChange }) {
           themeVariant="dark"
           display={Platform.OS === 'ios' ? 'spinner' : 'default'}
           onChange={(event, selected) => {
-            setShowTimePicker(Platform.OS === 'ios');
+            if (Platform.OS !== 'ios') onHidePicker();
             if (selected) {
               const hh = String(selected.getHours()).padStart(2, '0');
               const mm = String(selected.getMinutes()).padStart(2, '0');
-              onChange({ ...settings, reminderTime: `${hh}:${mm}` });
+              onChangeTime(`${hh}:${mm}`);
             }
           }}
         />
+        {Platform.OS === 'ios' && (
+          <Pressable style={styles.pickerDoneButton} onPress={onHidePicker}>
+            <Text style={styles.pickerDoneButtonText}>Fertig</Text>
+          </Pressable>
+        )}
+        </>
       )}
 
-      <Text style={styles.sectionTitle}>Falls du nicht reagierst</Text>
-      <Text style={styles.fieldLabel}>Erinnerung wiederholen alle</Text>
-      <Stepper
-        value={settings.escalationIntervalMinutes}
-        onChange={(v) => onChange({ ...settings, escalationIntervalMinutes: v })}
-        min={1}
-        max={60}
-        suffix="Min."
-      />
+      <Text style={styles.fieldLabel}>Intervall (Wiederholung alle)</Text>
+      <Stepper value={phase.intervalMinutes} onChange={onChangeInterval} min={1} max={180} suffix="Min." />
+    </View>
+  );
+}
 
-      <Text style={styles.fieldLabel}>Maximale Anzahl Wiederholungen</Text>
-      <Stepper
-        value={settings.escalationMaxRepeats}
-        onChange={(v) => onChange({ ...settings, escalationMaxRepeats: v })}
-        min={1}
-        max={30}
-        suffix="×"
-      />
+function SettingsTab({ settings, onChange }) {
+  const [showPickerForId, setShowPickerForId] = useState(null);
+
+  const sortedPhases = [...settings.phases].sort((a, b) => (a.time < b.time ? -1 : 1));
+
+  const updatePhase = (id, patch) => {
+    const phases = settings.phases.map((p) => (p.id === id ? { ...p, ...patch } : p));
+    onChange({ ...settings, phases });
+  };
+
+  const removePhase = (id) => {
+    onChange({ ...settings, phases: settings.phases.filter((p) => p.id !== id) });
+  };
+
+  const addPhase = () => {
+    if (settings.phases.length >= MAX_PHASES) return;
+    const last = sortedPhases[sortedPhases.length - 1];
+    let newTime = '20:00';
+    if (last) {
+      const [h, m] = last.time.split(':').map(Number);
+      const d = new Date();
+      d.setHours(h + 1, m, 0, 0);
+      newTime = `${String(d.getHours() % 24).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    }
+    const id = `p${Date.now()}`;
+    onChange({
+      ...settings,
+      phases: [...settings.phases, { id, time: newTime, intervalMinutes: 15, dayMode: 'evening' }],
+    });
+  };
+
+  const [showStopPicker, setShowStopPicker] = useState(false);
+  const [stopH, stopM] = settings.stopTime.split(':').map(Number);
+  const stopTimeAsDate = new Date();
+  stopTimeAsDate.setHours(stopH, stopM, 0, 0);
+
+  return (
+    <ScrollView contentContainerStyle={styles.tabContent}>
+      <Text style={styles.sectionTitle}>Erinnerungs-Zeiträume</Text>
+      <Text style={styles.hintText}>
+        Jeder Zeitraum erinnert ab seiner Startzeit im gewählten Intervall, bis der
+        nächste Zeitraum beginnt (oder bis zur Stopp-Zeit unten beim letzten). Ist ein
+        Zeitraum vorbei, sendet nur noch der aktuelle Zeitraum Erinnerungen. "Vorabend"
+        bezieht die Uhrzeit auf den Tag vor der Abholung, "Abholtag" auf den Abholtag
+        selbst.
+      </Text>
+
+      {sortedPhases.map((phase, index) => (
+        <PhaseRow
+          key={phase.id}
+          phase={phase}
+          index={index}
+          showPicker={showPickerForId === phase.id}
+          onShowPicker={() => setShowPickerForId(phase.id)}
+          onHidePicker={() => setShowPickerForId(null)}
+          onChangeTime={(time) => updatePhase(phase.id, { time })}
+          onChangeInterval={(v) => updatePhase(phase.id, { intervalMinutes: v })}
+          onChangeDayMode={(dayMode) => updatePhase(phase.id, { dayMode })}
+          onRemove={() => removePhase(phase.id)}
+          canRemove={settings.phases.length > 1}
+        />
+      ))}
+
+      {settings.phases.length < MAX_PHASES && (
+        <Pressable style={styles.addButton} onPress={addPhase}>
+          <Text style={styles.addButtonText}>+ Zeitraum hinzufügen</Text>
+        </Pressable>
+      )}
+
+      <Text style={styles.sectionTitle}>Wann soll spätestens Schluss sein?</Text>
+      <Text style={styles.hintText}>
+        Ab dieser Uhrzeit am Abholtag werden keine weiteren Erinnerungen mehr
+        geschickt, auch wenn du noch nicht bestätigt hast.
+      </Text>
+      <Pressable style={styles.dateButton} onPress={() => setShowStopPicker(true)}>
+        <Text style={styles.dateButtonText}>{settings.stopTime} Uhr</Text>
+      </Pressable>
+      {showStopPicker && (
+        <>
+          <DateTimePicker
+            value={stopTimeAsDate}
+            mode="time"
+            is24Hour
+            themeVariant="dark"
+            display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+            onChange={(event, selected) => {
+              if (Platform.OS !== 'ios') setShowStopPicker(false);
+              if (selected) {
+                const hh = String(selected.getHours()).padStart(2, '0');
+                const mm = String(selected.getMinutes()).padStart(2, '0');
+                onChange({ ...settings, stopTime: `${hh}:${mm}` });
+              }
+            }}
+          />
+          {Platform.OS === 'ios' && (
+            <Pressable style={styles.pickerDoneButton} onPress={() => setShowStopPicker(false)}>
+              <Text style={styles.pickerDoneButtonText}>Fertig</Text>
+            </Pressable>
+          )}
+        </>
+      )}
 
       <Text style={styles.hintText}>
         Die Erinnerungen erscheinen als dringende Mitteilung (durchbricht z.B. "Bitte nicht
@@ -394,23 +937,36 @@ export default function App() {
   const [confirmations, setConfirmationsState] = useState({});
   const [settings, setSettingsState] = useState(null);
   const [counts, setCountsState] = useState({});
+  const [history, setHistoryState] = useState({});
+  const [adjustments, setAdjustmentsState] = useState({});
+  const [yearlyTargets, setYearlyTargetsState] = useState({});
+  const [skipped, setSkippedState] = useState({});
+  const [selectedCounterType, setSelectedCounterType] = useState(null);
   const [importing, setImporting] = useState(false);
   const initialized = useRef(false);
 
   useEffect(() => {
     (async () => {
-      const [rs, ie, conf, set, cnt] = await Promise.all([
+      const [rs, ie, conf, set, cnt, hist, adj, skip, targets] = await Promise.all([
         getRecurringSchedules(),
         getImportedEvents(),
         getConfirmations(),
         getSettings(),
         getCounts(),
+        getHistory(),
+        getAdjustments(),
+        getSkipped(),
+        getYearlyTargets(),
       ]);
       setRecurringSchedulesState(rs);
       setImportedEventsState(ie);
       setConfirmationsState(conf);
       setSettingsState(set);
       setCountsState(cnt);
+      setHistoryState(hist);
+      setAdjustmentsState(adj);
+      setSkippedState(skip);
+      setYearlyTargetsState(targets);
       setLoading(false);
       initialized.current = true;
       await setupNotifications();
@@ -418,6 +974,7 @@ export default function App() {
   }, []);
 
   const typeFromId = (id) => id.split('__')[0];
+  const dateFromId = (id) => id.split('__')[1];
 
   const handleConfirm = useCallback(async (pickupIdOrIds) => {
     const ids = Array.isArray(pickupIdOrIds) ? pickupIdOrIds : [pickupIdOrIds];
@@ -434,6 +991,24 @@ export default function App() {
         next[type] = (next[type] ?? 0) + 1;
       }
       setCounts(next);
+      return next;
+    });
+    setHistoryState((prev) => {
+      const next = { ...prev };
+      for (const id of ids) {
+        const type = typeFromId(id);
+        const date = dateFromId(id);
+        const list = next[type] ? [...next[type]] : [];
+        if (!list.includes(date)) list.push(date);
+        next[type] = list;
+      }
+      setHistory(next);
+      return next;
+    });
+    setSkippedState((prev) => {
+      const next = { ...prev };
+      for (const id of ids) delete next[id];
+      setSkipped(next);
       return next;
     });
     for (const id of ids) {
@@ -454,6 +1029,69 @@ export default function App() {
       setCounts(next);
       return next;
     });
+    setHistoryState((prev) => {
+      const type = typeFromId(pickupId);
+      const date = dateFromId(pickupId);
+      const next = { ...prev, [type]: (prev[type] ?? []).filter((d) => d !== date) };
+      setHistory(next);
+      return next;
+    });
+  }, []);
+
+  const handleAdjustCounter = useCallback(
+    (type, delta) => {
+      // Zähler darf nie unter 0 fallen — geloggt wird nur die tatsächlich
+      // angewendete Änderung, damit der Verlauf nicht von der Anzeige abweicht.
+      const oldValue = counts[type] ?? 0;
+      const newValue = Math.max(0, oldValue + delta);
+      const effectiveDelta = newValue - oldValue;
+
+      const nextCounts = { ...counts, [type]: newValue };
+      setCountsState(nextCounts);
+      setCounts(nextCounts);
+
+      if (effectiveDelta !== 0) {
+        const todayKey = dateKeyFromDate(new Date());
+        const forType = { ...(adjustments[type] ?? {}) };
+        const net = (forType[todayKey] ?? 0) + effectiveDelta;
+        if (net === 0) {
+          delete forType[todayKey];
+        } else {
+          forType[todayKey] = net;
+        }
+        const nextAdjustments = { ...adjustments, [type]: forType };
+        setAdjustmentsState(nextAdjustments);
+        setAdjustments(nextAdjustments);
+      }
+    },
+    [counts, adjustments]
+  );
+
+  const handleSetYearlyTarget = useCallback(
+    (type, value) => {
+      const next = { ...yearlyTargets, [type]: value };
+      setYearlyTargetsState(next);
+      setYearlyTargets(next);
+    },
+    [yearlyTargets]
+  );
+
+  const handleSkip = useCallback(async (pickupId) => {
+    setSkippedState((prev) => {
+      const next = { ...prev, [pickupId]: true };
+      setSkipped(next);
+      return next;
+    });
+    await cancelRemindersForPickup(pickupId);
+  }, []);
+
+  const handleUnskip = useCallback((pickupId) => {
+    setSkippedState((prev) => {
+      const next = { ...prev };
+      delete next[pickupId];
+      setSkipped(next);
+      return next;
+    });
   }, []);
 
   useEffect(() => {
@@ -469,6 +1107,7 @@ export default function App() {
   }, [handleConfirm]);
 
   const pickups = getUpcomingPickups({ recurringSchedules, importedEvents, daysAhead: 21 });
+  const pastPickups = getPastPickups({ recurringSchedules, importedEvents, daysBack: 30 });
 
   const allTypes = Array.from(
     new Set([
@@ -480,9 +1119,9 @@ export default function App() {
 
   useEffect(() => {
     if (!initialized.current || !settings) return;
-    rescheduleAllReminders(pickups, confirmations, settings);
+    rescheduleAllReminders(pickups, confirmations, settings, skipped);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [recurringSchedules, importedEvents, confirmations, settings]);
+  }, [recurringSchedules, importedEvents, confirmations, skipped, settings]);
 
   const handleAddSchedule = async (schedule) => {
     const next = [...recurringSchedules, schedule];
@@ -494,6 +1133,20 @@ export default function App() {
     const next = recurringSchedules.filter((s) => s.id !== id);
     setRecurringSchedulesState(next);
     await setRecurringSchedules(next);
+  };
+
+  const mergeImportedEvents = async (newEvents) => {
+    const merged = [...importedEvents];
+    let addedCount = 0;
+    for (const ev of newEvents) {
+      if (!merged.some((m) => m.type === ev.type && m.date === ev.date)) {
+        merged.push({ type: ev.type, date: ev.date });
+        addedCount++;
+      }
+    }
+    setImportedEventsState(merged);
+    await setImportedEvents(merged);
+    return addedCount;
   };
 
   const handleImport = async () => {
@@ -511,20 +1164,32 @@ export default function App() {
         return;
       }
       const newEvents = events.map((e) => ({ type: e.summary || 'Abholung', date: e.date }));
-      const merged = [...importedEvents];
-      for (const ev of newEvents) {
-        if (!merged.some((m) => m.type === ev.type && m.date === ev.date)) {
-          merged.push(ev);
-        }
-      }
-      setImportedEventsState(merged);
-      await setImportedEvents(merged);
-      Alert.alert('Import erfolgreich', `${newEvents.length} Termine wurden importiert.`);
+      const addedCount = await mergeImportedEvents(newEvents);
+      Alert.alert('Import erfolgreich', `${addedCount} Termine wurden importiert.`);
     } catch (e) {
       Alert.alert('Fehler beim Import', e.message ?? 'Unbekannter Fehler');
     } finally {
       setImporting(false);
     }
+  };
+
+  const handleBremenImport = async (street, houseNo) => {
+    const events = await fetchBremenCalendar(street, houseNo);
+    if (events.length === 0) {
+      throw new Error('Keine Termine für diese Adresse gefunden.');
+    }
+    const addedCount = await mergeImportedEvents(events);
+    return addedCount;
+  };
+
+  const handleAddOneTime = async (event) => {
+    await mergeImportedEvents([event]);
+  };
+
+  const handleDeleteImportedEvent = (type, date) => {
+    const next = importedEvents.filter((e) => !(e.type === type && e.date === date));
+    setImportedEventsState(next);
+    setImportedEvents(next);
   };
 
   const handleClearImported = () => {
@@ -559,8 +1224,16 @@ export default function App() {
           confirmations={confirmations}
           onConfirm={handleConfirm}
           onUnconfirm={handleUnconfirm}
+          skipped={skipped}
+          onSkip={handleSkip}
+          onUnskip={handleUnskip}
           counts={counts}
           types={allTypes}
+          onSelectCounter={setSelectedCounterType}
+          history={history}
+          adjustments={adjustments}
+          yearlyTargets={yearlyTargets}
+          pastPickups={pastPickups}
           loading={loading}
         />
       )}
@@ -572,7 +1245,10 @@ export default function App() {
           onDeleteSchedule={handleDeleteSchedule}
           onImport={handleImport}
           onClearImported={handleClearImported}
+          onDeleteImportedEvent={handleDeleteImportedEvent}
           importing={importing}
+          onBremenImport={handleBremenImport}
+          onAddOneTime={handleAddOneTime}
         />
       )}
       {tab === 'settings' && settings && (
@@ -592,6 +1268,17 @@ export default function App() {
           </Pressable>
         ))}
       </View>
+
+      <CounterDetailModal
+        type={selectedCounterType}
+        count={selectedCounterType ? counts[selectedCounterType] ?? 0 : 0}
+        history={selectedCounterType ? history[selectedCounterType] ?? [] : []}
+        adjustments={selectedCounterType ? adjustments[selectedCounterType] ?? {} : {}}
+        target={selectedCounterType ? yearlyTargets[selectedCounterType] : undefined}
+        onAdjust={handleAdjustCounter}
+        onSetTarget={handleSetYearlyTarget}
+        onClose={() => setSelectedCounterType(null)}
+      />
 
       <StatusBar style="light" />
     </KeyboardAvoidingView>
@@ -626,6 +1313,56 @@ const styles = StyleSheet.create({
     marginTop: 40,
     lineHeight: 20,
   },
+  archiveSection: {
+    marginTop: 24,
+  },
+  archiveHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#1e1e30',
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  archiveTitle: {
+    color: '#999',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  archiveToggle: {
+    color: '#666',
+    fontSize: 11,
+  },
+  archiveRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#2a2a3d',
+  },
+  archiveType: {
+    color: '#ccc',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  archiveDate: {
+    color: '#777',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  archiveUndo: {
+    color: '#e74c3c',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  archiveConfirm: {
+    color: '#2ecc71',
+    fontSize: 12,
+    fontWeight: '600',
+  },
   countersBar: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -649,6 +1386,125 @@ const styles = StyleSheet.create({
   counterValue: {
     color: '#fff',
     fontSize: 13,
+    fontWeight: '700',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  modalCard: {
+    backgroundColor: '#24243a',
+    borderRadius: 20,
+    padding: 20,
+    width: '100%',
+    maxWidth: 360,
+    maxHeight: '70%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 16,
+  },
+  modalTitle: {
+    color: '#fff',
+    fontSize: 19,
+    fontWeight: '700',
+  },
+  modalCounterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 20,
+  },
+  modalTargetRow: {
+    marginTop: 18,
+    alignItems: 'center',
+  },
+  modalTargetLabel: {
+    color: '#999',
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  stepperButtonSmall: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: '#1e1e30',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalTargetValue: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '600',
+    minWidth: 40,
+    textAlign: 'center',
+  },
+  modalYearHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+    marginTop: 4,
+  },
+  modalYearTitle: {
+    color: '#8ab4f8',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  modalYearTotal: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  modalCounterValue: {
+    color: '#fff',
+    fontSize: 28,
+    fontWeight: '700',
+    minWidth: 60,
+    textAlign: 'center',
+  },
+  modalHint: {
+    color: '#777',
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 8,
+  },
+  modalSectionTitle: {
+    color: '#999',
+    fontSize: 13,
+    fontWeight: '700',
+    marginTop: 20,
+    marginBottom: 8,
+  },
+  modalEmptyText: {
+    color: '#777',
+    fontSize: 13,
+  },
+  modalHistoryList: {
+    maxHeight: 180,
+  },
+  modalHistoryItem: {
+    color: '#ccc',
+    fontSize: 14,
+    paddingVertical: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#3a3a55',
+  },
+  modalCloseButton: {
+    marginTop: 18,
+    backgroundColor: '#2ecc71',
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  modalCloseButtonText: {
+    color: '#fff',
     fontWeight: '700',
   },
   pickupRow: {
@@ -700,6 +1556,38 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: 13,
   },
+  pickupActions: {
+    alignItems: 'flex-end',
+    gap: 6,
+  },
+  skipButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  skipButtonText: {
+    color: '#888',
+    fontSize: 11,
+    fontWeight: '600',
+    textDecorationLine: 'underline',
+  },
+  skippedBadge: {
+    color: '#888',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  pickerDoneButton: {
+    alignSelf: 'flex-end',
+    backgroundColor: '#2ecc71',
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    marginTop: 6,
+  },
+  pickerDoneButtonText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 13,
+  },
   sectionTitle: {
     color: '#fff',
     fontSize: 17,
@@ -728,6 +1616,22 @@ const styles = StyleSheet.create({
     color: '#e74c3c',
     fontSize: 13,
     textAlign: 'center',
+  },
+  suggestionBox: {
+    backgroundColor: '#2a2a3d',
+    borderRadius: 12,
+    marginTop: 4,
+    overflow: 'hidden',
+  },
+  suggestionRow: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#3a3a55',
+  },
+  suggestionText: {
+    color: '#fff',
+    fontSize: 14,
   },
   chipRow: {
     flexDirection: 'row',
@@ -826,7 +1730,24 @@ const styles = StyleSheet.create({
     color: '#777',
     fontSize: 12,
     lineHeight: 18,
-    marginTop: 24,
+    marginTop: 12,
+    marginBottom: 8,
+  },
+  phaseCard: {
+    backgroundColor: '#24243a',
+    borderRadius: 16,
+    padding: 14,
+    marginTop: 12,
+  },
+  phaseHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  phaseLabel: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
   },
   tabBar: {
     flexDirection: 'row',

@@ -7,7 +7,8 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.einfxchjulian.muellabfuhr"
     },
     "android": {
       "adaptiveIcon": {
@@ -29,6 +30,18 @@
           "color": "#2ecc71"
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "4600ed84-8910-41a0-8513-3a08594c9700"
+      }
+    },
+    "owner": "einfxchjulian",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/4600ed84-8910-41a0-8513-3a08594c9700"
+    }
   }
 }

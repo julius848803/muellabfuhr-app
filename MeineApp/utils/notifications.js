@@ -64,27 +64,63 @@ export async function cancelAllReminders() {
   await setNotificationMap({});
 }
 
-function computeBaseTrigger(dateKey, settings) {
-  const [hour, minute] = settings.reminderTime.split(':').map(Number);
+const MAX_PER_PHASE = 100;
+// Hartes iOS-Limit für gleichzeitig geplante Benachrichtigungen liegt bei 64 —
+// wir bleiben mit etwas Puffer darunter, damit auch spätere Termine noch
+// Platz haben.
+const GLOBAL_SAFETY_CAP = 60;
+
+function baseDateForPhase(dateKey, time, dayMode) {
+  const [hour, minute] = time.split(':').map(Number);
   const [y, m, d] = dateKey.split('-').map(Number);
-  const base = new Date(y, m - 1, d, hour, minute, 0, 0);
-  if (settings.reminderMode === 'evening') {
-    base.setDate(base.getDate() - 1);
+  const date = new Date(y, m - 1, d, hour, minute, 0, 0);
+  if (dayMode === 'evening') {
+    date.setDate(date.getDate() - 1);
   }
-  return base;
+  return date;
+}
+
+// Erzeugt alle Feuer-Zeitpunkte für einen Abholtag anhand der konfigurierten
+// Zeiträume. Jeder Zeitraum hat seine eigene Vorabend/Abholtag-Einstellung,
+// daher werden alle Zeiträume anhand ihres tatsächlichen Zeitpunkts sortiert.
+// Ein Zeitraum läuft ab seiner Startzeit im eigenen Intervall, bis der
+// nächste beginnt (oder bis zur konfigurierten Stopp-Zeit beim letzten).
+function computeFireTimes(dateKey, settings) {
+  const withStart = settings.phases.map((phase) => ({
+    ...phase,
+    start: baseDateForPhase(dateKey, phase.time, phase.dayMode),
+  }));
+  withStart.sort((a, b) => a.start - b.start);
+
+  const stopAt = baseDateForPhase(dateKey, settings.stopTime, 'pickupDay');
+  const times = [];
+
+  for (let i = 0; i < withStart.length; i++) {
+    const phase = withStart[i];
+    const end = i + 1 < withStart.length ? withStart[i + 1].start : stopAt;
+
+    for (let k = 0; k < MAX_PER_PHASE; k++) {
+      const fireDate = new Date(phase.start.getTime() + k * phase.intervalMinutes * 60 * 1000);
+      if (fireDate >= end) break;
+      times.push(fireDate);
+    }
+  }
+
+  return times;
 }
 
 // Plant Erinnerungen für alle noch nicht bestätigten, anstehenden Abholungen.
 // Mehrere Tonnen am selben Tag werden zu einer gemeinsamen Nachricht gebündelt.
-// Bewusst begrenzt auf die nächsten Tage, damit das iOS-Limit für geplante
-// Benachrichtigungen (64) nicht gesprengt wird.
-export async function rescheduleAllReminders(pickups, confirmations, settings) {
+// Bewusst begrenzt auf die nächsten Tage + einen globalen Sicherheits-Deckel,
+// damit das iOS-Limit für geplante Benachrichtigungen (64) nicht gesprengt wird.
+export async function rescheduleAllReminders(pickups, confirmations, settings, skipped = {}) {
   await cancelAllReminders();
   const map = {};
   const now = new Date();
+  let totalScheduled = 0;
 
   const relevant = pickups.filter((p) => {
-    if (confirmations[p.id]) return false;
+    if (confirmations[p.id] || skipped[p.id]) return false;
     const diffDays = Math.round(
       (new Date(p.date).getTime() - new Date().setHours(0, 0, 0, 0)) / (1000 * 60 * 60 * 24)
     );
@@ -94,15 +130,16 @@ export async function rescheduleAllReminders(pickups, confirmations, settings) {
   const groups = groupByDate(relevant).slice(0, 4);
 
   for (const group of groups) {
+    if (totalScheduled >= GLOBAL_SAFETY_CAP) break;
+
     const dateKey = group[0].date;
     const pickupIds = group.map((p) => p.id);
     const typeNames = group.map((p) => p.type).join(', ');
-    const base = computeBaseTrigger(dateKey, settings);
+    const fireTimes = computeFireTimes(dateKey, settings).filter((t) => t > now);
     const ids = [];
 
-    for (let k = 0; k < settings.escalationMaxRepeats; k++) {
-      const fireDate = new Date(base.getTime() + k * settings.escalationIntervalMinutes * 60 * 1000);
-      if (fireDate <= now) continue;
+    for (let k = 0; k < fireTimes.length; k++) {
+      if (totalScheduled >= GLOBAL_SAFETY_CAP) break;
 
       const id = await Notifications.scheduleNotificationAsync({
         content: {
@@ -117,9 +154,10 @@ export async function rescheduleAllReminders(pickups, confirmations, settings) {
           data: { pickupIds },
           interruptionLevel: 'timeSensitive',
         },
-        trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: fireDate },
+        trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: fireTimes[k] },
       });
       ids.push(id);
+      totalScheduled++;
     }
 
     if (ids.length > 0) {

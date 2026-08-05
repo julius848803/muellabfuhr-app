@@ -11,6 +11,8 @@ const KNOWN = {
   gelbersack: '#f4d03f',
   wertstoff: '#f4d03f',
   glas: '#2ecc71',
+  weihnachtsbaum: '#1b7a3d',
+  sperrmüll: '#8e44ad',
 };
 
 const PALETTE = ['#e74c3c', '#9b59b6', '#1abc9c', '#e67e22', '#3498db', '#f39c12'];
