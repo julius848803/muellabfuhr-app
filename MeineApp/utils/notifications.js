@@ -85,7 +85,7 @@ function baseDateForPhase(dateKey, time, dayMode) {
 // daher werden alle Zeiträume anhand ihres tatsächlichen Zeitpunkts sortiert.
 // Ein Zeitraum läuft ab seiner Startzeit im eigenen Intervall, bis der
 // nächste beginnt (oder bis zur konfigurierten Stopp-Zeit beim letzten).
-function computeFireTimes(dateKey, settings) {
+function computeFireTimes(dateKey, settings, now) {
   const withStart = settings.phases.map((phase) => ({
     ...phase,
     start: baseDateForPhase(dateKey, phase.time, phase.dayMode),
@@ -98,10 +98,37 @@ function computeFireTimes(dateKey, settings) {
   for (let i = 0; i < withStart.length; i++) {
     const phase = withStart[i];
     const end = i + 1 < withStart.length ? withStart[i + 1].start : stopAt;
+    const intervalMs = phase.intervalMinutes * 60 * 1000;
+
+    // Bei sehr kurzen Intervallen über lange Zeiträume würde das reine
+    // Hochzählen ab phase.start das MAX_PER_PHASE-Budget schon in der
+    // Vergangenheit verbrauchen, bevor "jetzt" überhaupt erreicht ist.
+    // Deshalb: liegt der Start schon vor "jetzt", direkt zum nächsten
+    // zukünftigen Zeitpunkt vorspulen, statt bei k=0 anzufangen.
+    let effectiveStart = phase.start;
+    if (now && effectiveStart < now) {
+      const stepsElapsed = Math.floor((now.getTime() - effectiveStart.getTime()) / intervalMs) + 1;
+      effectiveStart = new Date(effectiveStart.getTime() + stepsElapsed * intervalMs);
+    }
 
     for (let k = 0; k < MAX_PER_PHASE; k++) {
-      const fireDate = new Date(phase.start.getTime() + k * phase.intervalMinutes * 60 * 1000);
+      const fireDate = new Date(effectiveStart.getTime() + k * intervalMs);
       if (fireDate >= end) break;
+      times.push(fireDate);
+    }
+  }
+
+  // Nachfass-Logik: Falls sämtliche konfigurierten Zeiträume für diesen Tag
+  // bereits vorbei sind (z.B. weil alle auf "Vorabend" stehen, der Termin
+  // aber heute fällig ist), aber die Stopp-Zeit noch nicht erreicht ist,
+  // soll trotzdem nicht komplett geschwiegen werden — dann startet sofort
+  // eine Erinnerungsserie im Intervall des letzten Zeitraums.
+  const future = times.filter((t) => t > now);
+  if (future.length === 0 && stopAt > now && withStart.length > 0) {
+    const lastPhase = withStart[withStart.length - 1];
+    for (let k = 0; k < MAX_PER_PHASE; k++) {
+      const fireDate = new Date(now.getTime() + k * lastPhase.intervalMinutes * 60 * 1000);
+      if (fireDate >= stopAt) break;
       times.push(fireDate);
     }
   }
@@ -135,7 +162,7 @@ export async function rescheduleAllReminders(pickups, confirmations, settings, s
     const dateKey = group[0].date;
     const pickupIds = group.map((p) => p.id);
     const typeNames = group.map((p) => p.type).join(', ');
-    const fireTimes = computeFireTimes(dateKey, settings).filter((t) => t > now);
+    const fireTimes = computeFireTimes(dateKey, settings, now).filter((t) => t > now);
     const ids = [];
 
     for (let k = 0; k < fireTimes.length; k++) {
