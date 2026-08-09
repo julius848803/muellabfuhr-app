@@ -15,13 +15,17 @@ import {
   Linking,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import Constants from 'expo-constants';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system';
 import DateTimePicker from '@react-native-community/datetimepicker';
 
 import { parseIcs } from './utils/ics';
 import { searchBremenStreets, fetchBremenCalendar } from './utils/bremenApi';
-import { REGIONS, getRegion } from './utils/regions';
+import * as Location from 'expo-location';
+import { REGIONS, getRegion, findNearestRegion } from './utils/regions';
+import { exportBackup, importBackupFromUri } from './utils/backup';
+import { LEXIKON } from './utils/lexikon';
 import { getYearlyBreakdown, getCurrentYearCount } from './utils/yearlyCounts';
 import { colorForType } from './utils/colors';
 import {
@@ -439,6 +443,7 @@ function RegionPickerModal({ visible, selectedId, onSelect, onClose }) {
 function BremenAutoImport({ onBremenImport }) {
   const [regionId, setRegionId] = useState('bremen');
   const [showRegionPicker, setShowRegionPicker] = useState(false);
+  const [locating, setLocating] = useState(false);
   const region = getRegion(regionId);
 
   const [street, setStreet] = useState('');
@@ -447,6 +452,31 @@ function BremenAutoImport({ onBremenImport }) {
   const [searching, setSearching] = useState(false);
   const [loading, setLoading] = useState(false);
   const debounceRef = useRef(null);
+
+  const handleUseLocation = async () => {
+    setLocating(true);
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Kein Zugriff', 'Standort-Berechtigung wurde nicht erteilt.');
+        return;
+      }
+      const pos = await Location.getCurrentPositionAsync({});
+      const { region: nearest, distanceKm } = findNearestRegion(
+        pos.coords.latitude,
+        pos.coords.longitude
+      );
+      setRegionId(nearest.id);
+      Alert.alert(
+        'Stadt erkannt',
+        `${nearest.name} (ca. ${distanceKm} km entfernt) wurde ausgewählt.`
+      );
+    } catch (e) {
+      Alert.alert('Fehler', e.message ?? 'Standort konnte nicht ermittelt werden.');
+    } finally {
+      setLocating(false);
+    }
+  };
 
   const onChangeStreet = (text) => {
     setStreet(text);
@@ -490,9 +520,21 @@ function BremenAutoImport({ onBremenImport }) {
       <Text style={styles.sectionTitle}>Automatisch laden</Text>
 
       <Text style={styles.fieldLabel}>Stadt</Text>
-      <Pressable style={styles.dateButton} onPress={() => setShowRegionPicker(true)}>
-        <Text style={styles.dateButtonText}>{region.name} ▾</Text>
-      </Pressable>
+      <View style={{ flexDirection: 'row', gap: 8 }}>
+        <Pressable
+          style={[styles.dateButton, { flex: 1 }]}
+          onPress={() => setShowRegionPicker(true)}
+        >
+          <Text style={styles.dateButtonText}>{region.name} ▾</Text>
+        </Pressable>
+        <Pressable style={styles.locateButton} onPress={handleUseLocation} disabled={locating}>
+          {locating ? (
+            <ActivityIndicator color="#fff" size="small" />
+          ) : (
+            <Text style={styles.locateButtonText}>📍</Text>
+          )}
+        </Pressable>
+      </View>
       <RegionPickerModal
         visible={showRegionPicker}
         selectedId={regionId}
@@ -884,7 +926,46 @@ function PhaseRow({
   );
 }
 
-function SettingsTab({ settings, onChange }) {
+function LexikonTab() {
+  const [query, setQuery] = useState('');
+  const filtered = query.trim()
+    ? LEXIKON.filter((e) => e.item.toLowerCase().includes(query.trim().toLowerCase()))
+    : LEXIKON;
+
+  return (
+    <View style={{ flex: 1 }}>
+      <View style={{ paddingHorizontal: 16 }}>
+        <TextInput
+          style={styles.input}
+          placeholder="Suchen (z.B. Batterien, Pizzakarton...)"
+          placeholderTextColor="#888"
+          value={query}
+          onChangeText={setQuery}
+        />
+      </View>
+      <FlatList
+        data={filtered}
+        keyExtractor={(item) => item.item}
+        contentContainerStyle={styles.tabContent}
+        renderItem={({ item }) => (
+          <View style={styles.lexikonRow}>
+            <View style={[styles.colorDot, { backgroundColor: colorForType(item.bin) }]} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.pickupType}>{item.item}</Text>
+              <Text style={styles.lexikonBin}>{item.bin}</Text>
+              {item.hint && <Text style={styles.lexikonHint}>{item.hint}</Text>}
+            </View>
+          </View>
+        )}
+        ListEmptyComponent={
+          <Text style={styles.emptyText}>Nichts gefunden. Im Zweifel: örtlicher Entsorger fragen.</Text>
+        }
+      />
+    </View>
+  );
+}
+
+function SettingsTab({ settings, onChange, onExportBackup, onImportBackup, backupBusy }) {
   const [showPickerForId, setShowPickerForId] = useState(null);
 
   const sortedPhases = [...settings.phases].sort((a, b) => (a.time < b.time ? -1 : 1));
@@ -991,8 +1072,60 @@ function SettingsTab({ settings, onChange }) {
         stören"), aber ohne Ton. In der Benachrichtigung kannst du direkt "Ist draußen"
         bestätigen oder um 5 Minuten verschieben.
       </Text>
+
+      <Text style={styles.sectionTitle}>Backup & Wiederherstellung</Text>
+      <Text style={styles.hintText}>
+        Alle Daten liegen nur auf diesem Gerät. Ein Backup schützt dich vor Datenverlust
+        bei App-Löschung oder Handywechsel.
+      </Text>
+      <Pressable style={styles.importButton} onPress={onExportBackup} disabled={backupBusy}>
+        {backupBusy ? (
+          <ActivityIndicator color="#fff" />
+        ) : (
+          <Text style={styles.importButtonText}>⬆️ Backup exportieren</Text>
+        )}
+      </Pressable>
+      <Pressable
+        style={[styles.importButton, { marginTop: 8, backgroundColor: '#555' }]}
+        onPress={onImportBackup}
+        disabled={backupBusy}
+      >
+        <Text style={styles.importButtonText}>⬇️ Backup importieren</Text>
+      </Pressable>
+
+      <Text style={styles.sectionTitle}>Rechtliches</Text>
+      <Pressable
+        style={styles.legalRow}
+        onPress={() => Linking.openURL('https://julius848803.github.io/muellabfuhr-app/datenschutz.html')}
+      >
+        <Text style={styles.legalRowText}>Datenschutzerklärung</Text>
+        <Text style={styles.legalRowArrow}>›</Text>
+      </Pressable>
+      <Pressable
+        style={styles.legalRow}
+        onPress={() => Linking.openURL('https://julius848803.github.io/muellabfuhr-app/impressum.html')}
+      >
+        <Text style={styles.legalRowText}>Impressum</Text>
+        <Text style={styles.legalRowArrow}>›</Text>
+      </Pressable>
+
+      <Text style={styles.sectionTitle}>Feedback</Text>
+      <Pressable style={styles.legalRow} onPress={handleSendFeedback}>
+        <Text style={styles.legalRowText}>Feedback geben / Fehler melden</Text>
+        <Text style={styles.legalRowArrow}>›</Text>
+      </Pressable>
     </ScrollView>
   );
+}
+
+function handleSendFeedback() {
+  const appVersion = Constants.expoConfig?.version ?? 'unbekannt';
+  const platformInfo = `${Platform.OS} ${Platform.Version}`;
+  const subject = encodeURIComponent('Feedback Müllabfuhr App');
+  const body = encodeURIComponent(
+    `Hier dein Feedback / die Fehlerbeschreibung:\n\n\n\n---\nApp-Version: ${appVersion}\nGerät: ${platformInfo}`
+  );
+  Linking.openURL(`mailto:google@julian-blume.de?subject=${subject}&body=${body}`);
 }
 
 // ---------- App ----------
@@ -1011,6 +1144,7 @@ export default function App() {
   const [skipped, setSkippedState] = useState({});
   const [selectedCounterType, setSelectedCounterType] = useState(null);
   const [importing, setImporting] = useState(false);
+  const [backupBusy, setBackupBusy] = useState(false);
   const initialized = useRef(false);
 
   useEffect(() => {
@@ -1279,6 +1413,37 @@ export default function App() {
     await setSettings(next);
   };
 
+  const handleExportBackup = async () => {
+    setBackupBusy(true);
+    try {
+      await exportBackup();
+    } catch (e) {
+      Alert.alert('Fehler beim Export', e.message ?? 'Unbekannter Fehler');
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  const handleImportBackup = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['application/json', '*/*'],
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled || !result.assets?.[0]) return;
+      setBackupBusy(true);
+      await importBackupFromUri(result.assets[0].uri);
+      Alert.alert(
+        'Backup importiert',
+        'Die Daten wurden wiederhergestellt. Bitte starte die App einmal neu, damit alles korrekt angezeigt wird.'
+      );
+    } catch (e) {
+      Alert.alert('Fehler beim Import', e.message ?? 'Unbekannter Fehler');
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
   return (
     <KeyboardAvoidingView
       style={styles.container}
@@ -1320,13 +1485,21 @@ export default function App() {
         />
       )}
       {tab === 'settings' && settings && (
-        <SettingsTab settings={settings} onChange={handleSettingsChange} />
+        <SettingsTab
+          settings={settings}
+          onChange={handleSettingsChange}
+          onExportBackup={handleExportBackup}
+          onImportBackup={handleImportBackup}
+          backupBusy={backupBusy}
+        />
       )}
+      {tab === 'lexikon' && <LexikonTab />}
 
       <View style={styles.tabBar}>
         {[
           { key: 'home', label: '🗓️ Übersicht' },
           { key: 'schedules', label: '📋 Termine' },
+          { key: 'lexikon', label: '🔍 Lexikon' },
           { key: 'settings', label: '⚙️ Einstellungen' },
         ].map((t) => (
           <Pressable key={t.key} style={styles.tabBarItem} onPress={() => setTab(t.key)}>
@@ -1377,7 +1550,7 @@ const styles = StyleSheet.create({
   },
   tabContent: {
     paddingHorizontal: 16,
-    paddingBottom: 40,
+    paddingBottom: 110,
   },
   emptyText: {
     color: '#888',
@@ -1607,6 +1780,26 @@ const styles = StyleSheet.create({
     fontSize: 13,
     marginTop: 2,
   },
+  lexikonRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#24243a',
+    borderRadius: 14,
+    padding: 14,
+    marginTop: 10,
+    gap: 12,
+  },
+  lexikonBin: {
+    color: '#8ab4f8',
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  lexikonHint: {
+    color: '#999',
+    fontSize: 12,
+    marginTop: 4,
+  },
   holidayWarning: {
     color: '#e8c547',
     fontSize: 12,
@@ -1688,6 +1881,17 @@ const styles = StyleSheet.create({
     color: '#e74c3c',
     fontSize: 13,
     textAlign: 'center',
+  },
+  locateButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: '#3a7bd5',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  locateButtonText: {
+    fontSize: 18,
   },
   suggestionBox: {
     backgroundColor: '#2a2a3d',
@@ -1772,6 +1976,24 @@ const styles = StyleSheet.create({
   removeText: {
     color: '#777',
     fontSize: 16,
+  },
+  legalRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#24243a',
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    marginTop: 8,
+  },
+  legalRowText: {
+    color: '#fff',
+    fontSize: 15,
+  },
+  legalRowArrow: {
+    color: '#666',
+    fontSize: 18,
   },
   stepperRow: {
     flexDirection: 'row',

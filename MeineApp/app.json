@@ -30,6 +30,12 @@
           "icon": "./assets/icon.png",
           "color": "#2ecc71"
         }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Wird genutzt, um beim Termin-Import automatisch deine Stadt vorzuschlagen."
+        }
       ]
     ],
     "extra": {
