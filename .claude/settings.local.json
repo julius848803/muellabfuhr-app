@@ -132,7 +132,11 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "PowerShell(cd C:\\\\Users\\\\julia\\\\Downloads\\\\app\\\\MeineApp; $env:Path = [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"User\"\\); npm install react-native-android-widget)",
       "Bash(curl -s -o /tmp/bcw1.js -w \"%{http_code}\\\\n\" \"http://localhost:8081/index.bundle?platform=android&dev=true\" --max-time 10)",
-      "Bash(curl -s -o /tmp/bcw2.js -w \"STATUS:%{http_code}\\\\n\" \"http://localhost:8081/index.bundle?platform=android&dev=true\" --max-time 30)"
+      "Bash(curl -s -o /tmp/bcw2.js -w \"STATUS:%{http_code}\\\\n\" \"http://localhost:8081/index.bundle?platform=android&dev=true\" --max-time 30)",
+      "Bash(git commit -m 'Homescreen-Widget: naechste Abholung direkt auf dem Startbildschirm *)",
+      "PowerShell(cd C:\\\\Users\\\\julia\\\\Downloads\\\\app\\\\MeineApp; $env:Path = [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"User\"\\); npx eas-cli build:view 9c7ab6da-38d2-42bf-a6e5-086065f341c1 --json 2>$null | Select-String '\"status\"|\"applicationArchiveUrl\"')",
+      "Bash(curl -sL -o /c/Users/julia/Downloads/MuellabfuhrApp3.apk \"https://expo.dev/artifacts/eas/C8eeLt_5yyDpnbVWx8EM899q8KE1oqDM8VXJlt7Hzso.apk\" -w \"%{http_code} size=%{size_download}\\\\n\")",
+      "PowerShell($env:Path = [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"Machine\"\\) + \";\" + [System.Environment]::GetEnvironmentVariable\\(\"Path\",\"User\"\\) + \";\" + \"$env:LOCALAPPDATA\\\\Android\\\\Sdk\\\\platform-tools\"; adb devices; adb install -r \"C:\\\\Users\\\\julia\\\\Downloads\\\\MuellabfuhrApp3.apk\")"
     ]
   }
 }

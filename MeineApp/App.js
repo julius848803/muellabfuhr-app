@@ -17,7 +17,7 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import Constants from 'expo-constants';
 import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import DateTimePicker from '@react-native-community/datetimepicker';
 
 import { parseIcs } from './utils/ics';
