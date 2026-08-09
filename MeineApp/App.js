@@ -12,6 +12,7 @@ import {
   Platform,
   Alert,
   Modal,
+  Linking,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as DocumentPicker from 'expo-document-picker';
@@ -20,6 +21,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 
 import { parseIcs } from './utils/ics';
 import { searchBremenStreets, fetchBremenCalendar } from './utils/bremenApi';
+import { REGIONS, getRegion } from './utils/regions';
 import { getYearlyBreakdown, getCurrentYearCount } from './utils/yearlyCounts';
 import { colorForType } from './utils/colors';
 import {
@@ -402,7 +404,43 @@ function HomeTab({
 
 // ---------- Termine verwalten ----------
 
+function RegionPickerModal({ visible, selectedId, onSelect, onClose }) {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.modalBackdrop} onPress={onClose}>
+        <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
+          <Text style={styles.modalTitle}>Stadt wählen</Text>
+          <ScrollView style={{ maxHeight: 360, marginTop: 12 }}>
+            {REGIONS.map((r) => (
+              <Pressable
+                key={r.id}
+                style={styles.suggestionRow}
+                onPress={() => {
+                  onSelect(r.id);
+                  onClose();
+                }}
+              >
+                <Text style={styles.suggestionText}>
+                  {r.name} {r.id === selectedId ? '✓' : ''}
+                  {!r.supported ? ' (nur Link)' : ''}
+                </Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+          <Pressable style={styles.modalCloseButton} onPress={onClose}>
+            <Text style={styles.modalCloseButtonText}>Schließen</Text>
+          </Pressable>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
 function BremenAutoImport({ onBremenImport }) {
+  const [regionId, setRegionId] = useState('bremen');
+  const [showRegionPicker, setShowRegionPicker] = useState(false);
+  const region = getRegion(regionId);
+
   const [street, setStreet] = useState('');
   const [houseNo, setHouseNo] = useState('');
   const [suggestions, setSuggestions] = useState([]);
@@ -449,54 +487,84 @@ function BremenAutoImport({ onBremenImport }) {
 
   return (
     <View>
-      <Text style={styles.sectionTitle}>Automatisch laden (Bremen)</Text>
-      <Text style={styles.hintText}>
-        Zieht Restmüll, Biomüll, Papier, Gelber Sack und Weihnachtsbaum-Termine direkt von
-        der Bremer Stadtreinigung, inkl. feiertagsbedingter Verschiebungen.
-      </Text>
-      <TextInput
-        style={styles.input}
-        placeholder="Straße"
-        placeholderTextColor="#888"
-        value={street}
-        onChangeText={onChangeStreet}
+      <Text style={styles.sectionTitle}>Automatisch laden</Text>
+
+      <Text style={styles.fieldLabel}>Stadt</Text>
+      <Pressable style={styles.dateButton} onPress={() => setShowRegionPicker(true)}>
+        <Text style={styles.dateButtonText}>{region.name} ▾</Text>
+      </Pressable>
+      <RegionPickerModal
+        visible={showRegionPicker}
+        selectedId={regionId}
+        onSelect={setRegionId}
+        onClose={() => setShowRegionPicker(false)}
       />
-      {suggestions.length > 0 && (
-        <View style={styles.suggestionBox}>
-          {suggestions.map((s) => (
-            <Pressable
-              key={s.id}
-              style={styles.suggestionRow}
-              onPress={() => {
-                setStreet(s.name);
-                setSuggestions([]);
-              }}
-            >
-              <Text style={styles.suggestionText}>
-                {s.name} {s.plz ? `(${s.plz})` : ''}
-              </Text>
-            </Pressable>
-          ))}
+
+      {region.supported ? (
+        <>
+          <Text style={[styles.hintText, { marginTop: 10 }]}>
+            Zieht Restmüll, Biomüll, Papier, Gelber Sack und Weihnachtsbaum-Termine direkt
+            von der Bremer Stadtreinigung, inkl. feiertagsbedingter Verschiebungen.
+          </Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Straße"
+            placeholderTextColor="#888"
+            value={street}
+            onChangeText={onChangeStreet}
+          />
+          {suggestions.length > 0 && (
+            <View style={styles.suggestionBox}>
+              {suggestions.map((s) => (
+                <Pressable
+                  key={s.id}
+                  style={styles.suggestionRow}
+                  onPress={() => {
+                    setStreet(s.name);
+                    setSuggestions([]);
+                  }}
+                >
+                  <Text style={styles.suggestionText}>
+                    {s.name} {s.plz ? `(${s.plz})` : ''}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
+          {searching && <ActivityIndicator color="#8ab4f8" style={{ marginTop: 4 }} />}
+
+          <TextInput
+            style={[styles.input, { marginTop: 8 }]}
+            placeholder="Hausnummer"
+            placeholderTextColor="#888"
+            value={houseNo}
+            onChangeText={setHouseNo}
+            keyboardType="numbers-and-punctuation"
+          />
+
+          <Pressable style={styles.importButton} onPress={handleLoad} disabled={loading}>
+            {loading ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.importButtonText}>📍 Termine automatisch laden</Text>
+            )}
+          </Pressable>
+        </>
+      ) : (
+        <View style={{ marginTop: 10 }}>
+          <Text style={styles.hintText}>
+            Für {region.name} gibt's noch keine automatische Anbindung. Öffne die offizielle
+            Kalenderseite, um dir dort ggf. eine ICS-Datei zu besorgen und weiter unten zu
+            importieren.
+          </Text>
+          <Pressable
+            style={styles.importButton}
+            onPress={() => region.url && Linking.openURL(region.url)}
+          >
+            <Text style={styles.importButtonText}>🔗 Kalenderseite von {region.name} öffnen</Text>
+          </Pressable>
         </View>
       )}
-      {searching && <ActivityIndicator color="#8ab4f8" style={{ marginTop: 4 }} />}
-
-      <TextInput
-        style={[styles.input, { marginTop: 8 }]}
-        placeholder="Hausnummer"
-        placeholderTextColor="#888"
-        value={houseNo}
-        onChangeText={setHouseNo}
-        keyboardType="numbers-and-punctuation"
-      />
-
-      <Pressable style={styles.importButton} onPress={handleLoad} disabled={loading}>
-        {loading ? (
-          <ActivityIndicator color="#fff" />
-        ) : (
-          <Text style={styles.importButtonText}>📍 Termine automatisch laden</Text>
-        )}
-      </Pressable>
     </View>
   );
 }
@@ -1262,7 +1330,11 @@ export default function App() {
           { key: 'settings', label: '⚙️ Einstellungen' },
         ].map((t) => (
           <Pressable key={t.key} style={styles.tabBarItem} onPress={() => setTab(t.key)}>
-            <Text style={[styles.tabBarLabel, tab === t.key && styles.tabBarLabelActive]}>
+            <Text
+              style={[styles.tabBarLabel, tab === t.key && styles.tabBarLabelActive]}
+              numberOfLines={1}
+              adjustsFontSizeToFit
+            >
               {t.label}
             </Text>
           </Pressable>
@@ -1760,11 +1832,13 @@ const styles = StyleSheet.create({
   tabBarItem: {
     flex: 1,
     alignItems: 'center',
+    paddingHorizontal: 2,
   },
   tabBarLabel: {
     color: '#777',
     fontSize: 12,
     fontWeight: '600',
+    maxWidth: '100%',
   },
   tabBarLabelActive: {
     color: '#2ecc71',
