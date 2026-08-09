@@ -29,6 +29,11 @@ export async function setupNotifications() {
       vibrationPattern: [0, 250, 250, 250],
       sound: null,
       lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+      // Durchbricht "Bitte nicht stören" — braucht zusätzlich die
+      // "Nicht-stören-Zugriff"-Berechtigung, die der Nutzer manuell in den
+      // Android-Systemeinstellungen erteilen muss (kann die App nicht selbst
+      // aktivieren, das ist eine besonders geschützte Berechtigung).
+      bypassDnd: true,
     });
   }
 
