@@ -26,6 +26,9 @@ import * as Location from 'expo-location';
 import { REGIONS, getRegion, findNearestRegion } from './utils/regions';
 import { exportBackup, importBackupFromUri } from './utils/backup';
 import { LEXIKON } from './utils/lexikon';
+import { requestWidgetUpdate } from 'react-native-android-widget';
+import { NextPickupWidget } from './widgets/NextPickupWidget';
+import { getNextPickupItems } from './utils/widgetData';
 import { getYearlyBreakdown, getCurrentYearCount } from './utils/yearlyCounts';
 import { colorForType } from './utils/colors';
 import {
@@ -1322,6 +1325,10 @@ export default function App() {
   useEffect(() => {
     if (!initialized.current || !settings) return;
     rescheduleAllReminders(pickups, confirmations, settings, skipped);
+    requestWidgetUpdate({
+      widgetName: 'NextPickupWidget',
+      renderWidget: async () => <NextPickupWidget items={await getNextPickupItems()} />,
+    }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recurringSchedules, importedEvents, confirmations, skipped, settings]);
 

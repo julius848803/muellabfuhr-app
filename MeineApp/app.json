@@ -36,6 +36,24 @@
         {
           "locationWhenInUsePermission": "Wird genutzt, um beim Termin-Import automatisch deine Stadt vorzuschlagen."
         }
+      ],
+      [
+        "react-native-android-widget",
+        {
+          "widgets": [
+            {
+              "name": "NextPickupWidget",
+              "label": "Nächste Abholung",
+              "description": "Zeigt deine nächste Müllabfuhr direkt auf dem Homescreen.",
+              "minWidth": "180dp",
+              "minHeight": "80dp",
+              "targetCellWidth": 3,
+              "targetCellHeight": 1,
+              "resizeMode": "horizontal|vertical",
+              "updatePeriodMillis": 1800000
+            }
+          ]
+        }
       ]
     ],
     "extra": {
