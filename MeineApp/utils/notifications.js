@@ -1,9 +1,11 @@
 import * as Notifications from 'expo-notifications';
+import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { formatRelativeDay } from './pickups';
 
 const NOTIFICATION_MAP_KEY = 'mb_notification_map';
 const CATEGORY_ID = 'MUELL_REMINDER';
+const ANDROID_CHANNEL_ID = 'reminders';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -17,6 +19,19 @@ Notifications.setNotificationHandler({
 
 export async function setupNotifications() {
   await Notifications.requestPermissionsAsync();
+
+  // Android verlangt seit Version 8 einen explizit angelegten Notification
+  // Channel, sonst werden geplante Benachrichtigungen nicht angezeigt.
+  if (Platform.OS === 'android') {
+    await Notifications.setNotificationChannelAsync(ANDROID_CHANNEL_ID, {
+      name: 'Müllabfuhr-Erinnerungen',
+      importance: Notifications.AndroidImportance.HIGH,
+      vibrationPattern: [0, 250, 250, 250],
+      sound: null,
+      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+    });
+  }
+
   await Notifications.setNotificationCategoryAsync(CATEGORY_ID, [
     {
       identifier: 'CONFIRM',
@@ -181,7 +196,11 @@ export async function rescheduleAllReminders(pickups, confirmations, settings, s
           data: { pickupIds },
           interruptionLevel: 'timeSensitive',
         },
-        trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: fireTimes[k] },
+        trigger: {
+          type: Notifications.SchedulableTriggerInputTypes.DATE,
+          date: fireTimes[k],
+          channelId: ANDROID_CHANNEL_ID,
+        },
       });
       ids.push(id);
       totalScheduled++;
