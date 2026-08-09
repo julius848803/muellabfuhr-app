@@ -5,15 +5,153 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Müllabfuhr – Alles in Eins</title>
 <style>
-  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background:#14141f; color:#eee; max-width:700px; margin:0 auto; padding:60px 20px; line-height:1.6; text-align:center; }
-  h1 { font-size:28px; }
-  a { display:inline-block; margin:10px; color:#2ecc71; font-weight:600; text-decoration:none; background:#24243a; padding:12px 20px; border-radius:10px; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    background: #14141f;
+    color: #eee;
+    margin: 0;
+    line-height: 1.6;
+  }
+  .hero {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 60px 20px 30px;
+    text-align: center;
+  }
+  .hero img.feature {
+    width: 100%;
+    max-width: 640px;
+    border-radius: 16px;
+    margin-bottom: 24px;
+  }
+  h1 { font-size: 28px; margin: 0 0 8px; }
+  .tagline { color: #999; font-size: 17px; margin-bottom: 28px; }
+  .links a {
+    display: inline-block;
+    margin: 6px;
+    color: #2ecc71;
+    font-weight: 600;
+    text-decoration: none;
+    background: #24243a;
+    padding: 12px 20px;
+    border-radius: 10px;
+  }
+
+  section {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 30px 20px;
+  }
+  h2 {
+    font-size: 22px;
+    text-align: center;
+    margin-bottom: 24px;
+  }
+
+  .features {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 16px;
+  }
+  .feature-card {
+    background: #24243a;
+    border-radius: 14px;
+    padding: 18px 20px;
+  }
+  .feature-card .emoji { font-size: 26px; margin-bottom: 8px; }
+  .feature-card h3 { margin: 0 0 6px; font-size: 16px; color: #fff; }
+  .feature-card p { margin: 0; font-size: 14px; color: #999; }
+
+  .screenshots {
+    display: flex;
+    gap: 14px;
+    overflow-x: auto;
+    padding-bottom: 12px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .screenshots img {
+    height: 480px;
+    border-radius: 18px;
+    flex-shrink: 0;
+    border: 1px solid #2a2a3d;
+  }
+
+  footer {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 30px 20px 60px;
+    text-align: center;
+    color: #666;
+    font-size: 13px;
+  }
+  footer a { color: #8ab4f8; }
 </style>
 </head>
 <body>
-  <h1>🗑️ Müllabfuhr – Alles in Eins</h1>
-  <p>Nie wieder Mülltonne vergessen.</p>
-  <a href="./datenschutz.html">Datenschutzerklärung</a>
-  <a href="./impressum.html">Impressum</a>
+
+  <div class="hero">
+    <img class="feature" src="./screenshots/vorstellungsgrafik-1024x500.png" alt="Müllabfuhr – Alles in Eins">
+    <h1>🗑️ Müllabfuhr – Alles in Eins</h1>
+    <p class="tagline">Nie wieder Mülltonne vergessen – automatische Termine & smarte Erinnerungen.</p>
+    <div class="links">
+      <a href="./datenschutz.html">Datenschutzerklärung</a>
+      <a href="./impressum.html">Impressum</a>
+    </div>
+  </div>
+
+  <section>
+    <h2>Was die App kann</h2>
+    <div class="features">
+      <div class="feature-card">
+        <div class="emoji">📍</div>
+        <h3>Automatischer Import</h3>
+        <p>Für Bremen: Straße und Hausnummer eingeben, fertig – alle Termine direkt von der Bremer Stadtreinigung, inkl. Feiertagsverschiebungen.</p>
+      </div>
+      <div class="feature-card">
+        <div class="emoji">🔔</div>
+        <h3>Intelligente Erinnerungen</h3>
+        <p>Mehrere Erinnerungs-Zeiträume mit eigenem Intervall, bis du bestätigst, dass die Tonne draußen steht.</p>
+      </div>
+      <div class="feature-card">
+        <div class="emoji">🔍</div>
+        <h3>Mülltrennungs-Lexikon</h3>
+        <p>Durchsuchbares Nachschlagewerk – was gehört eigentlich in welche Tonne?</p>
+      </div>
+      <div class="feature-card">
+        <div class="emoji">📊</div>
+        <h3>Zähler mit Jahresziel</h3>
+        <p>Behalte im Blick, wie oft welche Tonne im Jahr rausgestellt wurde.</p>
+      </div>
+      <div class="feature-card">
+        <div class="emoji">📱</div>
+        <h3>Homescreen-Widget</h3>
+        <p>Zeigt die nächste Abholung direkt auf dem Startbildschirm.</p>
+      </div>
+      <div class="feature-card">
+        <div class="emoji">💾</div>
+        <h3>Backup & Wiederherstellung</h3>
+        <p>Alle Daten jederzeit als Datei exportieren und wiederherstellen.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Screenshots</h2>
+    <div class="screenshots">
+      <img src="./screenshots/screenshot-1-uebersicht.png" alt="Übersicht">
+      <img src="./screenshots/screenshot-2-bremen-automatik.png" alt="Bremen Automatik-Import">
+      <img src="./screenshots/screenshot-3-lexikon.png" alt="Mülltrennungs-Lexikon">
+      <img src="./screenshots/screenshot-4-erinnerungen.png" alt="Erinnerungs-Zeiträume">
+      <img src="./screenshots/screenshot-5-zaehler.png" alt="Zähler mit Jahresziel">
+      <img src="./screenshots/screenshot-6-widget.png" alt="Homescreen-Widget">
+    </div>
+  </section>
+
+  <footer>
+    Alle Daten bleiben lokal auf dem Gerät – kein Tracking, keine Werbung.<br>
+    <a href="./datenschutz.html">Datenschutzerklärung</a> · <a href="./impressum.html">Impressum</a>
+  </footer>
+
 </body>
 </html>
