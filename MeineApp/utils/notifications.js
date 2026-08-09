@@ -4,6 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { formatRelativeDay } from './pickups';
 
 const NOTIFICATION_MAP_KEY = 'mb_notification_map';
+const SHOWN_MAP_KEY = 'mb_shown_notification_map';
 const CATEGORY_ID = 'MUELL_REMINDER';
 const ANDROID_CHANNEL_ID = 'reminders';
 
@@ -60,6 +61,26 @@ async function setNotificationMap(map) {
   await AsyncStorage.setItem(NOTIFICATION_MAP_KEY, JSON.stringify(map));
 }
 
+// Merkt sich pro Tonnen-Gruppe (sortierte pickupIds als Schlüssel), welche
+// zuletzt zugestellte Benachrichtigung gerade in der Statusleiste hängt.
+// Jede Erinnerung einer Eskalations-Serie bekommt eine eigene ID (sonst
+// würde das Planen der nächsten die vorherige, noch nicht fällige,
+// überschreiben) — dadurch stapeln sie sich aber sonst alle übereinander in
+// der Leiste. Deshalb wird beim Zustellen einer neuen die vorherige aktiv
+// weggewischt.
+function groupKeyForPickupIds(pickupIds) {
+  return [...pickupIds].sort().join(',');
+}
+
+async function getShownMap() {
+  const raw = await AsyncStorage.getItem(SHOWN_MAP_KEY);
+  return raw ? JSON.parse(raw) : {};
+}
+
+async function setShownMap(map) {
+  await AsyncStorage.setItem(SHOWN_MAP_KEY, JSON.stringify(map));
+}
+
 export async function cancelRemindersForPickup(pickupId) {
   const map = await getNotificationMap();
   const ids = map[pickupId] ?? [];
@@ -68,6 +89,17 @@ export async function cancelRemindersForPickup(pickupId) {
   }
   delete map[pickupId];
   await setNotificationMap(map);
+
+  // Auch eine aktuell in der Leiste hängende Erinnerung für diese Tonne
+  // wegwischen, sonst bleibt sie nach dem Bestätigen sichtbar stehen.
+  const shownMap = await getShownMap();
+  for (const key of Object.keys(shownMap)) {
+    if (key.split(',').includes(String(pickupId))) {
+      await Notifications.dismissNotificationAsync(shownMap[key]).catch(() => {});
+      delete shownMap[key];
+    }
+  }
+  await setShownMap(shownMap);
 }
 
 function groupByDate(pickups) {
@@ -82,6 +114,29 @@ function groupByDate(pickups) {
 export async function cancelAllReminders() {
   await Notifications.cancelAllScheduledNotificationsAsync();
   await setNotificationMap({});
+  await setShownMap({});
+}
+
+// Läuft, sobald eine geplante Erinnerung tatsächlich in der Statusleiste
+// erscheint (auch im Hintergrund). Gehört sie zu einer Gruppe, für die schon
+// eine ältere Erinnerung sichtbar ist, wird die alte weggewischt — so bleibt
+// immer nur die aktuellste "Ist die Tonne draußen?"-Meldung stehen, statt
+// dass sich mehrere Duplikate stapeln.
+export function addNotificationReceivedListener() {
+  return Notifications.addNotificationReceivedListener(async (notification) => {
+    const pickupIds = notification.request.content.data?.pickupIds;
+    const identifier = notification.request.identifier;
+    if (!pickupIds || pickupIds.length === 0 || !identifier) return;
+
+    const key = groupKeyForPickupIds(pickupIds);
+    const shownMap = await getShownMap();
+    const previousId = shownMap[key];
+    if (previousId && previousId !== identifier) {
+      await Notifications.dismissNotificationAsync(previousId).catch(() => {});
+    }
+    shownMap[key] = identifier;
+    await setShownMap(shownMap);
+  });
 }
 
 const MAX_PER_PHASE = 100;

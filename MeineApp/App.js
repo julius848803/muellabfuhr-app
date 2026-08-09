@@ -63,6 +63,7 @@ import {
   rescheduleAllReminders,
   cancelRemindersForPickup,
   addNotificationResponseListener,
+  addNotificationReceivedListener,
 } from './utils/notifications';
 
 const INTERVAL_OPTIONS = [
@@ -1076,6 +1077,25 @@ function SettingsTab({ settings, onChange, onExportBackup, onImportBackup, backu
         bestätigen oder um 5 Minuten verschieben.
       </Text>
 
+      {Platform.OS === 'android' && (
+        <>
+          <Text style={styles.hintText}>
+            Damit Erinnerungen "Bitte nicht stören" wirklich durchbrechen, muss Android dir
+            einmalig eine besondere Berechtigung abfragen (kann die App aus
+            Sicherheitsgründen nicht selbst aktivieren). Tippe unten, wähle "Müllabfuhr" aus
+            der Liste und aktiviere den Zugriff.
+          </Text>
+          <Pressable
+            style={styles.importButton}
+            onPress={() =>
+              Linking.sendIntent?.('android.settings.NOTIFICATION_POLICY_ACCESS_SETTINGS')
+            }
+          >
+            <Text style={styles.importButtonText}>🔕 "Nicht stören"-Zugriff einrichten</Text>
+          </Pressable>
+        </>
+      )}
+
       <Text style={styles.sectionTitle}>Backup & Wiederherstellung</Text>
       <Text style={styles.hintText}>
         Alle Daten liegen nur auf diesem Gerät. Ein Backup schützt dich vor Datenverlust
@@ -1310,6 +1330,14 @@ export default function App() {
     );
     return () => sub.remove();
   }, [handleConfirm]);
+
+  useEffect(() => {
+    // Wischt ältere Erinnerungen derselben Tonnen-Gruppe weg, sobald eine
+    // neue aus der Eskalations-Serie zugestellt wird — sonst stapeln sich
+    // mehrere "Ist die Tonne draußen?"-Meldungen in der Statusleiste.
+    const sub = addNotificationReceivedListener();
+    return () => sub.remove();
+  }, []);
 
   const pickups = getUpcomingPickups({ recurringSchedules, importedEvents, daysAhead: 21 });
   const pastPickups = getPastPickups({ recurringSchedules, importedEvents, daysBack: 30 });
