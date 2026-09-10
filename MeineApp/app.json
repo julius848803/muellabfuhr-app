@@ -1,24 +1,73 @@
 {
   "expo": {
-    "name": "MeineApp",
+    "name": "Müllabfuhr",
     "slug": "MeineApp",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.einfxchjulian.muellabfuhr"
     },
     "android": {
+      "package": "com.einfxchjulian.muellabfuhr",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#1e1e30",
         "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       }
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "@react-native-community/datetimepicker",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#2ecc71"
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Wird genutzt, um beim Termin-Import automatisch deine Stadt vorzuschlagen."
+        }
+      ],
+      [
+        "react-native-android-widget",
+        {
+          "widgets": [
+            {
+              "name": "NextPickupWidget",
+              "label": "Nächste Abholung",
+              "description": "Zeigt deine nächste Müllabfuhr direkt auf dem Homescreen.",
+              "minWidth": "180dp",
+              "minHeight": "80dp",
+              "targetCellWidth": 3,
+              "targetCellHeight": 1,
+              "resizeMode": "horizontal|vertical",
+              "updatePeriodMillis": 1800000
+            }
+          ]
+        }
+      ],
+      "expo-sharing",
+      "expo-status-bar"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "4600ed84-8910-41a0-8513-3a08594c9700"
+      }
+    },
+    "owner": "einfxchjulian",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/4600ed84-8910-41a0-8513-3a08594c9700"
     }
   }
 }
